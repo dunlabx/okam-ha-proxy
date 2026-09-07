@@ -56,23 +56,23 @@ class OkamApi:
     async def devices(self) -> list[dict[str, Any]]:
         return await self._request("GET", "/api/devices")
 
-    async def status(self, camera_id: str) -> dict[str, Any]:
-        return await self._request("GET", f"/api/cameras/{camera_id}/status")
+    async def status(self, camera_uid: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/cameras/{camera_uid}/status")
 
-    async def snapshot(self, camera_id: str) -> bytes:
+    async def snapshot(self, camera_uid: str) -> bytes:
         return await self._request(
             "GET",
-            f"/api/cameras/{camera_id}/snapshot.jpg",
+            f"/api/cameras/{camera_uid}/snapshot.jpg",
             timeout=ClientTimeout(total=90, connect=5),
         )
 
-    async def configure(self, camera_id: str, idle_timeout: int) -> None:
+    async def configure(self, camera_uid: str, idle_timeout: int) -> None:
         await self._request(
             "PATCH",
-            f"/api/cameras/{camera_id}/config",
+            f"/api/cameras/{camera_uid}/config",
             json={"idle_timeout_seconds": idle_timeout},
         )
 
-    async def stream_source(self, camera_id: str) -> str:
-        result = await self._request("GET", f"/api/cameras/{camera_id}/stream/source")
+    async def stream_source(self, camera_uid: str) -> str:
+        result = await self._request("GET", f"/api/cameras/{camera_uid}/stream/source")
         return str(result["stream_url"])

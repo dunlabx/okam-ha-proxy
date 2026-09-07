@@ -25,15 +25,15 @@ Confirm that all required values are present:
 
 Do not use the O-KAM password as the local API token.
 
-## Account enumeration does not find one camera
+## Account enumeration does not find a selected camera
 
-The configured O-KAM account must show exactly one camera. It may be the normal
-camera-owner account or an account to which the camera was shared.
+When the account has multiple cameras, configure `camera_uids` with the exact
+UIDs to expose. The bridge does not select the first camera automatically.
 
 1. Sign in to the configured account in the O-KAM mobile app.
 2. Confirm that the camera is visible and live view works.
-3. Remove any additional cameras from that account or use an account containing
-   only the intended camera.
+3. Copy the UIDs shown by the account diagnostic into `camera_uids` and remove
+   whitespace or duplicates.
 4. Save the Home Assistant app configuration and restart the app.
 
 ## Camera authentication fails
@@ -147,3 +147,12 @@ Include:
 
 Remove account names, passwords, API tokens, camera identifiers, public IP
 addresses, and any other private values before posting.
+
+## RTSP does not connect
+
+- Use `rtsp://BRIDGE_HOST:8100/CAMERA_UID` and force TCP transport.
+- From Frigate or go2rtc, `127.0.0.1` means that container, not the Home
+  Assistant add-on; use an address reachable from the Frigate container.
+- Keep the add-on's default API/RTSP ports when using the Home Assistant
+  Supervisor port mapping. Custom ports are intended for standalone deployments.
+- RTSP has no separate authentication; keep it on the trusted LAN.

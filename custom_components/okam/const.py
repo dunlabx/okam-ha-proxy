@@ -6,6 +6,7 @@ PLATFORMS = ["camera"]
 CONF_BRIDGE_URL = "bridge_url"
 CONF_API_TOKEN = "api_token"
 CONF_CAMERA_ID = "camera_id"
+CONF_CAMERA_UID = "camera_uid"
 CONF_IDLE_TIMEOUT = "idle_timeout"
 CONF_SNAPSHOT_INTERVAL = "snapshot_interval"
 

@@ -12,7 +12,8 @@ Do not open a public issue for an undisclosed vulnerability.
 
 ## Credential safety
 
-- Use an O-KAM account containing only the camera intended for Home Assistant.
+- Select only the intended camera UIDs in `camera_uids`; additional account
+  cameras are never initialized automatically.
 - Use a unique random local API token of at least 16 characters.
 - Never post account names, passwords, API tokens, camera identifiers, packet
   captures, media, or unredacted logs.
@@ -21,8 +22,10 @@ Do not open a public issue for an undisclosed vulnerability.
 
 ## Network safety
 
-- Keep TCP port 8099 on the trusted local network.
-- Do not port-forward the bridge or expose it through a public reverse proxy.
+- Keep TCP ports 8099 (API) and 8100 (RTSP) on the trusted local network.
+- Do not port-forward either port or expose them through a public reverse proxy.
+- RTSP currently has no separate authentication. Knowledge of a UID is not
+  authorization, so use it only on a trusted Home Assistant/LAN network.
 - Camera API routes require bearer authentication. The liveness and readiness
   routes intentionally expose only non-secret operational state.
 

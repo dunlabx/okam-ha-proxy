@@ -9,6 +9,7 @@
           "bridge_url": "Bridge URL",
           "api_token": "API token",
           "camera_id": "Camera ID",
+          "camera_uid": "Camera",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }
@@ -19,9 +20,20 @@
           "bridge_url": "Bridge URL",
           "api_token": "API token",
           "camera_id": "Camera ID",
+          "camera_uid": "Camera",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }
+      },
+      "camera": {
+        "title": "Select O-KAM camera",
+        "description": "Choose one of the cameras explicitly enabled by the bridge.",
+        "data": {"camera_uid": "Camera"}
+      },
+      "reconfigure_camera": {
+        "title": "Select O-KAM camera",
+        "description": "Choose the camera represented by this Home Assistant entry.",
+        "data": {"camera_uid": "Camera"}
       },
       "reauth_confirm": {
         "title": "Update API token",
@@ -31,7 +43,7 @@
     "error": {
       "cannot_connect": "Cannot connect to the native bridge",
       "invalid_auth": "The API token is incorrect",
-      "camera_not_found": "The configured camera ID was not found"
+      "camera_not_found": "The configured camera UID or ID was not found"
     },
     "abort": {"already_configured": "This bridge is already configured"}
   }

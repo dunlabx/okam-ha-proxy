@@ -12,13 +12,17 @@ boot: auto
 watchdog: http://[HOST]:[PORT:8099]/health
 ports:
   8099/tcp: 8099
+  8100/tcp: 8100
 ports_description:
   8099/tcp: Native runtime status API
+  8100/tcp: RTSP camera streaming
 options:
   account_username: null
   account_password: null
   api_token: null
   camera_id: cabin
+  api_port: 8099
+  rtsp_port: 8100
   idle_timeout_seconds: 120
   run_connect_test: false
   run_auth_test: false
@@ -30,6 +34,9 @@ schema:
   camera_password: password?
   api_token: password
   camera_id: "match(^[A-Za-z0-9_-]{1,32}$)"
+  camera_uids: "[str]?"
+  api_port: "int(1,65535)"
+  rtsp_port: "int(1,65535)"
   idle_timeout_seconds: "int(10,600)"
   run_connect_test: bool
   run_auth_test: bool

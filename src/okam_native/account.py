@@ -29,6 +29,52 @@ class AccountDevice:
     device_password: str = field(repr=False)
 
 
+def normalize_camera_uids(value: object) -> list[str] | None:
+    """Normalize explicit camera selection without logging identifiers."""
+
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise AccountError("camera_uids must be a list")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise AccountError("camera UID is invalid")
+        uid = item.strip()
+        if not uid:
+            raise AccountError("camera UID cannot be empty")
+        if uid in seen:
+            raise AccountError("camera_uids contains duplicates")
+        seen.add(uid)
+        result.append(uid)
+    if not result:
+        raise AccountError("camera_uids cannot be empty")
+    return result
+
+
+def select_account_devices(
+    devices: list[AccountDevice], camera_uids: list[str] | None = None
+) -> list[AccountDevice]:
+    """Select exactly the configured cameras, preserving legacy single mode."""
+
+    if camera_uids is not None:
+        camera_uids = normalize_camera_uids(camera_uids)
+    if camera_uids is None:
+        if len(devices) == 1:
+            return [devices[0]]
+        raise AccountError("camera_uids is required when the account has multiple cameras")
+    by_uid: dict[str, AccountDevice] = {}
+    for device in devices:
+        if device.uid in by_uid:
+            raise AccountError("official account returned duplicate camera UIDs")
+        by_uid[device.uid] = device
+    missing = [uid for uid in camera_uids if uid not in by_uid]
+    if missing:
+        raise AccountError("one or more configured camera UIDs were not found in the account")
+    return [by_uid[uid] for uid in camera_uids]
+
+
 OpenRequest = Callable[[urllib.request.Request, float], bytes]
 
 

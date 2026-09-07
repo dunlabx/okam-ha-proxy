@@ -14,6 +14,9 @@ def test_native_bridge_is_a_prebuilt_64_bit_ha_app() -> None:
     assert "machine:" not in config
     assert "version: 1.2.1" in config
     assert "idle_timeout_seconds: 120" in config
+    assert "api_port: 8099" in config
+    assert "rtsp_port: 8100" in config
+    assert 'camera_uids: "[str]?"' in config
     assert "account_username: email" in config
     assert "account_password: password" in config
     assert "camera_password: password?" in config
@@ -74,6 +77,8 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     component = ROOT / "custom_components" / "okam"
     manifest = (component / "manifest.json").read_text(encoding="utf-8")
     config_flow = (component / "config_flow.py").read_text(encoding="utf-8")
+    integration_init = (component / "__init__.py").read_text(encoding="utf-8")
+    strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
     assert '"version": "1.2.1"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
@@ -88,6 +93,17 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
         "self.internal_integration_suggested_object_id = runtime.coordinator.camera_id"
         in camera
     )
+    assert "CONF_CAMERA_UID" in config_flow
+    assert "SelectSelector" in config_flow
+    assert "camera_uid" in strings
+    assert "async_update_entry" in integration_init
+    assert "type OkamConfigEntry =" not in integration_init
+    assert "async_step_camera" in config_flow
+    assert "async_step_reconfigure_camera" in config_flow
+    assert "CameraSelectionRequired" in config_flow
+    assert "f\"{bridge_url}:{camera_uid}\"" in config_flow
+    assert "multiple cameras; reconfigure this entry" in integration_init
+    assert "/api/cameras/{camera_uid}/status" in (ROOT / "custom_components" / "okam" / "api.py").read_text(encoding="utf-8")
 
 
 def test_integration_uses_two_minute_warm_connection_default() -> None:
@@ -177,6 +193,8 @@ def test_test_addon_cannot_collide_with_the_installed_one() -> None:
     # Distinct host port, so both can run side by side.
     assert "8099/tcp: 8099" in installed
     assert "8099/tcp: 8098" in candidate
+    assert "8100/tcp: 8100" in installed
+    assert "8100/tcp: 8101" in candidate
     assert "boot: manual" in candidate
 
 

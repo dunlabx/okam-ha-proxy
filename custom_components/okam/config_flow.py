@@ -14,6 +14,7 @@ from .const import (
     CONF_API_TOKEN,
     CONF_BRIDGE_URL,
     CONF_CAMERA_ID,
+    CONF_CAMERA_UID,
     CONF_IDLE_TIMEOUT,
     CONF_SNAPSHOT_INTERVAL,
     DEFAULT_CAMERA_ID,
@@ -21,6 +22,12 @@ from .const import (
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
 )
+
+
+class CameraSelectionRequired(ValueError):
+    def __init__(self, devices: list[dict[str, Any]]) -> None:
+        super().__init__("camera_selection_required")
+        self.devices = devices
 
 
 def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
@@ -51,28 +58,101 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     )
 
 
+def _camera_uid(item: dict[str, Any]) -> str:
+    value = item.get("camera_uid") or item.get("camera_id")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _camera_selector(devices: list[dict[str, Any]]) -> vol.Schema:
+    options = [
+        {
+            "value": uid,
+            "label": str(item.get("name") or item.get("camera_id") or uid),
+        }
+        for item in devices
+        if (uid := _camera_uid(item))
+    ]
+    return vol.Schema(
+        {
+            vol.Required(CONF_CAMERA_UID): selector.SelectSelector(
+                selector.SelectSelectorConfig(options=options)
+            )
+        }
+    )
+
+
 async def _validate(hass, data: dict[str, Any]) -> dict[str, Any]:
     api = OkamApi(
         async_get_clientsession(hass), data[CONF_BRIDGE_URL], data[CONF_API_TOKEN]
     )
     await api.health()
     devices = await api.devices()
-    camera_id = data.get(CONF_CAMERA_ID) or (devices[0]["camera_id"] if devices else "")
-    if not camera_id or not any(item.get("camera_id") == camera_id for item in devices):
+    if not devices:
+        raise ValueError("camera_not_found")
+    requested_uid = data.get(CONF_CAMERA_UID)
+    requested_id = data.get(CONF_CAMERA_ID)
+    selected = None
+    if isinstance(requested_uid, str) and requested_uid:
+        selected = next((item for item in devices if _camera_uid(item) == requested_uid), None)
+    if selected is None and isinstance(requested_id, str) and requested_id:
+        selected = next((item for item in devices if item.get("camera_id") == requested_id), None)
+    if selected is None and len(devices) == 1:
+        selected = devices[0]
+    if selected is None:
+        raise CameraSelectionRequired(devices)
+    uid = _camera_uid(selected)
+    if not uid:
         raise ValueError("camera_not_found")
     result = dict(data)
-    result[CONF_CAMERA_ID] = camera_id
+    result[CONF_CAMERA_UID] = uid
+    result[CONF_CAMERA_ID] = str(selected.get("camera_id") or uid)
+    name = selected.get("name")
+    if isinstance(name, str) and name:
+        result["camera_name"] = name
     return result
+
+
+async def _discover(hass, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Authenticate and return the cameras available for a selector step."""
+
+    api = OkamApi(
+        async_get_clientsession(hass), data[CONF_BRIDGE_URL], data[CONF_API_TOKEN]
+    )
+    await api.health()
+    devices = await api.devices()
+    if not devices:
+        raise ValueError("camera_not_found")
+    return devices
 
 
 class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
+    async def _create_camera_entry(self, data: dict[str, Any]):
+        bridge_url = data[CONF_BRIDGE_URL].lower()
+        camera_uid = data[CONF_CAMERA_UID].lower()
+        if any(
+            entry.data.get(CONF_BRIDGE_URL, "").lower() == bridge_url
+            and str(
+                entry.data.get(CONF_CAMERA_UID, entry.data.get(CONF_CAMERA_ID, ""))
+            ).lower()
+            == camera_uid
+            for entry in self.hass.config_entries.async_entries(DOMAIN)
+        ):
+            return self.async_abort(reason="already_configured")
+        await self.async_set_unique_id(
+            f"{bridge_url}:{camera_uid}"
+        )
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"O-KAM {data.get('camera_name') or data[CONF_CAMERA_UID]}", data=data
+        )
+
     async def async_step_user(self, user_input=None):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                data = await _validate(self.hass, user_input)
+                devices = await _discover(self.hass, user_input)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
             except OkamApiError:
@@ -80,11 +160,37 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ValueError:
                 errors["base"] = "camera_not_found"
             else:
-                await self.async_set_unique_id(data[CONF_BRIDGE_URL].lower())
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(title="O-KAM Native Bridge", data=data)
+                self._pending_data = dict(user_input)
+                self._pending_devices = devices
+                return self.async_show_form(
+                    step_id="camera",
+                    data_schema=_camera_selector(devices),
+                    errors={},
+                )
         return self.async_show_form(
             step_id="user", data_schema=_schema(user_input), errors=errors
+        )
+
+    async def async_step_camera(self, user_input=None):
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**self._pending_data, **user_input}
+            try:
+                validated = await _validate(self.hass, data)
+            except CameraSelectionRequired:
+                errors["base"] = "camera_not_found"
+            except OkamAuthError:
+                errors["base"] = "invalid_auth"
+            except OkamApiError:
+                errors["base"] = "cannot_connect"
+            except ValueError:
+                errors["base"] = "camera_not_found"
+            else:
+                return await self._create_camera_entry(validated)
+        return self.async_show_form(
+            step_id="camera",
+            data_schema=_camera_selector(self._pending_devices),
+            errors=errors,
         )
 
     async def async_step_reconfigure(self, user_input=None):
@@ -92,7 +198,7 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                data = await _validate(self.hass, user_input)
+                devices = await _discover(self.hass, user_input)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
             except OkamApiError:
@@ -100,9 +206,39 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ValueError:
                 errors["base"] = "camera_not_found"
             else:
-                return self.async_update_reload_and_abort(entry, data=data)
+                self._pending_entry = entry
+                self._pending_data = dict(user_input)
+                self._pending_devices = devices
+                return self.async_show_form(
+                    step_id="reconfigure_camera",
+                    data_schema=_camera_selector(devices),
+                    errors={},
+                )
         return self.async_show_form(
             step_id="reconfigure", data_schema=_schema(entry.data), errors=errors
+        )
+
+    async def async_step_reconfigure_camera(self, user_input=None):
+        entry = self._pending_entry
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            data = {**self._pending_data, **user_input}
+            try:
+                validated = await _validate(self.hass, data)
+            except CameraSelectionRequired:
+                errors["base"] = "camera_not_found"
+            except OkamAuthError:
+                errors["base"] = "invalid_auth"
+            except OkamApiError:
+                errors["base"] = "cannot_connect"
+            except ValueError:
+                errors["base"] = "camera_not_found"
+            else:
+                return self.async_update_reload_and_abort(entry, data=validated)
+        return self.async_show_form(
+            step_id="reconfigure_camera",
+            data_schema=_camera_selector(self._pending_devices),
+            errors=errors,
         )
 
     async def async_step_reauth(self, entry_data):
@@ -118,6 +254,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data = {**self._reauth_entry.data, **user_input}
             try:
                 validated = await _validate(self.hass, data)
+            except CameraSelectionRequired:
+                errors["base"] = "camera_not_found"
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
             except OkamApiError:

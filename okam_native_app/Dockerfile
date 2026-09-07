@@ -113,7 +113,7 @@ COPY native/amd64_connect/okam-amd64-connect /opt/okam/okam-amd64-connect
 COPY okam_native_app/app_entrypoint.py /opt/okam/app_entrypoint.py
 RUN chmod 0755 /opt/okam/okam-amd64-connect
 
-EXPOSE 8099
+EXPOSE 8099 8100
 ENTRYPOINT ["python3", "/opt/okam/app_entrypoint.py"]
 
 FROM runtime-base AS runtime-amd64

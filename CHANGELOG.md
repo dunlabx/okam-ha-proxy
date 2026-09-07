@@ -1,5 +1,14 @@
 # Changelog
 
+## Next
+
+- Adds explicit `camera_uids` selection for arbitrary subsets of an O-KAM account.
+- Runs independent on-demand camera sessions behind one shared registry.
+- Adds configurable API and RTSP ports and a standard H.264 RTSP-over-TCP server
+  at `rtsp://HOST:8100/<camera_uid>` without transcoding.
+- Keeps HTTP/HA viewers and RTSP consumers on the same per-camera fan-out and
+  idle lifecycle.
+
 ## 1.2.1
 
 - Shows the release notes in the app update dialog. The supervisor reads a

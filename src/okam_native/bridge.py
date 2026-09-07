@@ -11,7 +11,7 @@ import sys
 import threading
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .p2p import P2PError
 from .session import NativeStreamSession
@@ -60,12 +60,14 @@ class CameraBridge:
         self,
         *,
         camera_id: str,
+        camera_uid: str | None = None,
         camera_name: str,
         api_token: str,
         session: NativeStreamSession,
         ffmpeg: str,
     ) -> None:
         self.camera_id = camera_id
+        self.camera_uid = camera_uid or camera_id
         self.camera_name = camera_name
         self._api_token = api_token
         self._stream_token = secrets.token_urlsafe(32)
@@ -95,6 +97,7 @@ class CameraBridge:
             state = "idle"
         return {
             "camera_id": self.camera_id,
+            "camera_uid": self.camera_uid,
             "name": self.camera_name,
             "online": True,
             "state": state,
@@ -111,8 +114,76 @@ class CameraBridge:
         }
 
 
+class BridgeRegistry:
+    """Thread-safe registry containing independent camera runtimes."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._bridges: dict[str, CameraBridge] = {}
+
+    def add(self, bridge: CameraBridge) -> None:
+        with self._lock:
+            identifiers = {bridge.camera_id, bridge.camera_uid}
+            if any(
+                identifiers.intersection({item.camera_id, item.camera_uid})
+                for item in self._bridges.values()
+            ):
+                raise ValueError("duplicate camera identifier")
+            self._bridges[bridge.camera_id] = bridge
+
+    def get(self, identifier: str) -> CameraBridge | None:
+        with self._lock:
+            bridge = self._bridges.get(identifier)
+            if bridge is not None:
+                return bridge
+            for candidate in self._bridges.values():
+                if candidate.camera_uid == identifier:
+                    return candidate
+            return None
+
+    def values(self) -> tuple[CameraBridge, ...]:
+        with self._lock:
+            return tuple(self._bridges.values())
+
+    def close(self) -> None:
+        for bridge in self.values():
+            try:
+                bridge.session.close()
+            except Exception as error:  # pragma: no cover - defensive shutdown path
+                print(f"camera_close_failed error={type(error).__name__}", file=sys.stderr)
+
+    def status(self) -> dict[str, object]:
+        bridges = self.values()
+        statuses = [bridge.status() for bridge in bridges]
+        return {
+            "camera_count": len(statuses),
+            "ready_camera_count": sum(bool(item.get("online")) for item in statuses),
+            "streaming_camera_count": sum(item.get("state") == "streaming" for item in statuses),
+            "cameras": statuses,
+        }
+
+
 StatusProvider = Callable[[], dict[str, object]]
-BridgeProvider = Callable[[], CameraBridge | None]
+BridgeProvider = Callable[[], CameraBridge | None] | BridgeRegistry
+
+
+def _all_bridges(provider: BridgeProvider) -> tuple[CameraBridge, ...]:
+    if isinstance(provider, BridgeRegistry):
+        return provider.values()
+    bridge = provider()
+    return (bridge,) if bridge is not None else ()
+
+
+def _bridge_for(provider: BridgeProvider, identifier: str | None = None) -> CameraBridge | None:
+    if isinstance(provider, BridgeRegistry):
+        if identifier is None:
+            bridges = provider.values()
+            return bridges[0] if bridges else None
+        return provider.get(identifier)
+    bridge = provider()
+    if bridge is None or identifier is None:
+        return bridge
+    return bridge if identifier in (bridge.camera_id, bridge.camera_uid) else None
 
 
 def make_handler(
@@ -156,15 +227,51 @@ def make_handler(
                 self._json(200 if ready else 503, payload)
                 return
 
-            bridge = bridge_provider()
-            if bridge is None:
-                self._json(503, {"error": "bridge_not_ready"})
+            path_parts = [unquote(part) for part in parsed.path.split("/") if part]
+            camera_identifier = (
+                path_parts[2]
+                if len(path_parts) >= 3 and path_parts[:2] == ["api", "cameras"]
+                else None
+            )
+            if path_parts == ["api", "devices"]:
+                bridge = _bridge_for(bridge_provider)
+                if bridge is None:
+                    self._json(503, {"error": "bridge_not_ready"})
+                    return
+                if not bridge.authenticated(self.headers.get("Authorization")):
+                    self._json(401, {"error": "unauthorized"})
+                    return
+                self._json(
+                    200,
+                    [
+                        {
+                            "camera_id": item.camera_id,
+                            **(
+                                {"camera_uid": item.camera_uid}
+                                if item.camera_uid != item.camera_id
+                                else {}
+                            ),
+                            "name": item.camera_name,
+                        }
+                        for item in _all_bridges(bridge_provider)
+                    ],
+                )
                 return
-            camera_prefix = f"/api/cameras/{quote(bridge.camera_id, safe='')}"
-            if parsed.path in (
-                f"{camera_prefix}/stream.h264",
-                f"{camera_prefix}/stream.ts",
-            ):
+
+            bridge = _bridge_for(bridge_provider, camera_identifier)
+            if bridge is None:
+                self._json(404 if camera_identifier else 503, {"error": "camera_not_found" if camera_identifier else "bridge_not_ready"})
+                return
+            camera_prefixes = {
+                f"/api/cameras/{quote(bridge.camera_id, safe='')}",
+                f"/api/cameras/{quote(bridge.camera_uid, safe='')}",
+            }
+            stream_paths = tuple(
+                f"{prefix}/stream.{suffix}"
+                for prefix in camera_prefixes
+                for suffix in ("h264", "ts")
+            )
+            if parsed.path in stream_paths:
                 token = parse_qs(parsed.query).get("token", [None])[0]
                 if not bridge.stream_authenticated(token):
                     self._json(401, {"error": "unauthorized"})
@@ -177,16 +284,11 @@ def make_handler(
             if not bridge.authenticated(self.headers.get("Authorization")):
                 self._json(401, {"error": "unauthorized"})
                 return
-            if parsed.path == "/api/devices":
-                self._json(
-                    200,
-                    [{"camera_id": bridge.camera_id, "name": bridge.camera_name}],
-                )
-            elif parsed.path == f"{camera_prefix}/status":
+            if any(parsed.path == f"{prefix}/status" for prefix in camera_prefixes):
                 self._json(200, bridge.status())
-            elif parsed.path == f"{camera_prefix}/snapshot.jpg":
+            elif any(parsed.path == f"{prefix}/snapshot.jpg" for prefix in camera_prefixes):
                 self._snapshot(bridge)
-            elif parsed.path == f"{camera_prefix}/stream/source":
+            elif any(parsed.path == f"{prefix}/stream/source" for prefix in camera_prefixes):
                 self._json(200, {"stream_url": bridge.stream_url(self.headers.get("Host"))})
             else:
                 self._json(404, {"error": "not_found"})
@@ -195,8 +297,12 @@ def make_handler(
             bridge = self._authorized_bridge()
             if bridge is None:
                 return
-            camera_prefix = f"/api/cameras/{quote(bridge.camera_id, safe='')}"
-            if urlsplit(self.path).path != f"{camera_prefix}/config":
+            path = urlsplit(self.path).path
+            camera_prefixes = {
+                f"/api/cameras/{quote(bridge.camera_id, safe='')}",
+                f"/api/cameras/{quote(bridge.camera_uid, safe='')}",
+            }
+            if not any(path == f"{prefix}/config" for prefix in camera_prefixes):
                 self._json(404, {"error": "not_found"})
                 return
             body = self._request_json()
@@ -213,13 +319,16 @@ def make_handler(
             bridge = self._authorized_bridge()
             if bridge is None:
                 return
-            camera_prefix = f"/api/cameras/{quote(bridge.camera_id, safe='')}"
             path = urlsplit(self.path).path
-            if path == f"{camera_prefix}/stream/start":
+            camera_prefixes = {
+                f"/api/cameras/{quote(bridge.camera_id, safe='')}",
+                f"/api/cameras/{quote(bridge.camera_uid, safe='')}",
+            }
+            if any(path == f"{prefix}/stream/start" for prefix in camera_prefixes):
                 if self._request_json() is None:
                     return
                 self._json(200, {"stream_url": bridge.stream_url(self.headers.get("Host"))})
-            elif path == f"{camera_prefix}/stream/stop":
+            elif any(path == f"{prefix}/stream/stop" for prefix in camera_prefixes):
                 if self._request_json() is None:
                     return
                 self._json(200, {"stopped": True})
@@ -227,9 +336,15 @@ def make_handler(
                 self._json(404, {"error": "not_found"})
 
         def _authorized_bridge(self) -> CameraBridge | None:
-            bridge = bridge_provider()
+            path_parts = [unquote(part) for part in urlsplit(self.path).path.split("/") if part]
+            identifier = (
+                path_parts[2]
+                if len(path_parts) >= 3 and path_parts[:2] == ["api", "cameras"]
+                else None
+            )
+            bridge = _bridge_for(bridge_provider, identifier)
             if bridge is None:
-                self._json(503, {"error": "bridge_not_ready"})
+                self._json(404 if identifier else 503, {"error": "camera_not_found" if identifier else "bridge_not_ready"})
                 return None
             if not bridge.authenticated(self.headers.get("Authorization")):
                 self._json(401, {"error": "unauthorized"})

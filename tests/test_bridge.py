@@ -125,6 +125,49 @@ def test_bridge_api_is_authenticated_and_exposes_native_camera() -> None:
         thread.join(timeout=3)
 
 
+def test_devices_endpoint_lists_each_enabled_camera_without_credentials() -> None:
+    first = CameraBridge(
+        camera_id="front-alias",
+        camera_uid="UID_FRONT",
+        camera_name="Front Door",
+        api_token="shared-token-123",
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    second = CameraBridge(
+        camera_id="back-alias",
+        camera_uid="UID_BACK",
+        camera_name="Back Door",
+        api_token="shared-token-123",
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    from okam_native.bridge import BridgeRegistry
+
+    registry = BridgeRegistry()
+    registry.add(first)
+    registry.add(second)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_handler(lambda: {}, registry)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        assert request(server, "GET", "/api/devices")[0] == 401
+        code, _content_type, payload = request(
+            server, "GET", "/api/devices", token="shared-token-123"
+        )
+        assert code == 200
+        assert json.loads(payload) == [
+            {"camera_id": "front-alias", "camera_uid": "UID_FRONT", "name": "Front Door"},
+            {"camera_id": "back-alias", "camera_uid": "UID_BACK", "name": "Back Door"},
+        ]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
 def test_bridge_idle_timeout_is_bounded() -> None:
     session = FakeSession()
     bridge = CameraBridge(

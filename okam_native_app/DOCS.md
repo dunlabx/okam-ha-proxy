@@ -1,14 +1,13 @@
 # O-KAM Native Bridge
 
-O-KAM Native Bridge connects one O-KAM Pro camera directly to Home Assistant on
+O-KAM Native Bridge connects selected O-KAM Pro cameras directly to Home Assistant on
 `aarch64` and `amd64` systems. It provides live H.264 video, JPEG snapshots,
 automatic camera wake-up, shared viewing, and automatic idle disconnect.
 
 ## Before configuring the app
 
-Use an O-KAM account that can view exactly one camera. This can be the normal
-camera-owner account or an account to which the camera was shared. Sign in with
-that account in the O-KAM app once and confirm that live view works.
+Use an O-KAM account that can view the cameras you want to expose. For more
+than one account camera, `camera_uids` is required and must contain exact UIDs.
 
 ## Configuration
 
@@ -19,10 +18,17 @@ that account in the O-KAM app once and confirm that live view works.
 | `camera_password` | Optional camera-level password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
 | `camera_id` | Home Assistant camera alias, for example `cabin` |
+| `camera_uids` | Exact list of camera UIDs; required when the account has multiple cameras |
+| `api_port` | HTTP API port; default `8099` |
+| `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
 
 The API token is not an O-KAM credential. Create a new random value and enter
 the identical value when adding the Home Assistant integration.
+
+After account enumeration, the token-protected `GET /api/devices` endpoint
+lists the selected camera names and UIDs. Use that response to verify the
+selection without exposing account or camera passwords.
 
 The app normally obtains the camera-level credential automatically and has a
 compatibility fallback for accounts that omit it. Set `camera_password` only
@@ -40,8 +46,8 @@ default. A successful startup log contains:
 
 ```text
 native_loader_ready=true
-account_enumerated=true device_count=1
-bridge_ready=true camera_count=1
+account_enumerated=true device_count=<selected-count>
+bridge_ready=true
 ```
 
 The readiness page is available at:
@@ -51,6 +57,16 @@ http://HOME_ASSISTANT_LAN_IP:8099/ready
 ```
 
 It should report `camera_ready: true` and `phase: bridge_ready` while idle.
+
+RTSP URLs use the selected UID:
+
+```text
+rtsp://BRIDGE_HOST:8100/CAMERA_UID
+```
+
+Frigate and go2rtc should use the bridge host address reachable from their
+container and force RTSP TCP transport. The RTSP endpoint has no separate
+authentication, so keep it on a trusted LAN and do not port-forward it.
 
 ## Home Assistant integration
 

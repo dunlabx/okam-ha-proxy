@@ -1,6 +1,6 @@
 # O-KAM Native Bridge for Home Assistant
 
-O-KAM Native Bridge connects an O-KAM Pro camera directly to Home Assistant on
+O-KAM Native Bridge connects selected O-KAM Pro cameras directly to Home Assistant on
 64-bit ARM (`aarch64`) and x86-64 (`amd64`) systems. Live video, snapshots,
 camera wake-up, and disconnects are handled by the Home Assistant host.
 
@@ -19,17 +19,19 @@ The project contains both required parts:
 - Automatic wake-up for battery cameras
 - Clear sleeping and waking-up images instead of a black preview
 - One camera connection shared by simultaneous viewers
+- Multiple selected cameras from one O-KAM account, each with an independent lifecycle
+- Standard RTSP-over-TCP output for Frigate, go2rtc, VLC, and ffmpeg
 - Automatic stream stop and clean disconnect after the last viewer leaves
 - User-created API token protecting the local bridge
 - No transcoding during live view
-- No vendor identifiers, account tokens, or passwords exposed by the status API
+- No vendor identifiers, account tokens, or passwords exposed by the unauthenticated readiness API
 
 ## Requirements
 
 - A Home Assistant system reporting the `aarch64` or `amd64` architecture
 - An O-KAM Pro camera that works in the O-KAM mobile app
-- An O-KAM account that can view exactly one camera; the account may own the
-  camera or have it shared to it
+- An O-KAM account that can view the cameras you select; the account may own
+  them or have them shared to it
 - HACS for the easiest integration installation, or access to
   `/config/custom_components` for manual installation
 
@@ -52,8 +54,8 @@ if you are unsure.
 
 Use the normal O-KAM account that can open the camera's live view. It may be
 the camera owner account or an account to which the camera was shared. The
-bridge currently supports one camera, so the chosen account must show exactly
-one camera.
+For an account with more than one camera, select the exact UIDs in
+`camera_uids`; the bridge never picks a camera implicitly.
 
 Sign in with that account in the O-KAM mobile app once and confirm that live
 view works. Keep its email address and password available for app
@@ -79,9 +81,22 @@ configuration.
    | `camera_password` | Normally leave blank; optional camera-level password override |
    | `api_token` | A new random secret of at least 16 characters that you choose |
    | `camera_id` | Local camera alias, for example `cabin` |
+   | `camera_uids` | Optional exact list of camera UIDs; required for a multi-camera account |
+   | `api_port` | HTTP API port, default `8099` |
+   | `rtsp_port` | RTSP-over-TCP port, default `8100` |
    | `idle_timeout_seconds` | `120` seconds is recommended |
 
    Leave all four `run_*_test` options disabled during normal operation.
+
+   A multi-camera configuration looks like:
+
+   ```yaml
+   camera_uids:
+     - CAMERA_UID_1
+     - CAMERA_UID_2
+   api_port: 8099
+   rtsp_port: 8100
+   ```
 
 6. Save the configuration and start the app. It is configured to start
    automatically with Home Assistant.
@@ -89,8 +104,8 @@ configuration.
 
    ```text
    native_loader_ready=true
-   account_enumerated=true device_count=1
-   bridge_ready=true camera_count=1
+   account_enumerated=true device_count=<selected-count>
+   bridge_ready=true
    ```
 
 The API token is a local secret created by you. It is not supplied by O-KAM and
@@ -138,11 +153,31 @@ This is not the O-KAM account password.
    | Status refresh interval | `900` seconds is recommended |
 
 Use the actual LAN address of Home Assistant, for example
-`http://192.168.1.20:8099`. Do not use `localhost`.
+`http://192.168.1.20:8099`. Do not use `localhost` between separate add-on
+containers.
 
-For a new installation with the alias `cabin`, Home Assistant creates
-`camera.cabin`. If an entity with that ID already exists, Home Assistant may add
-a numeric suffix; its entity ID can be changed from the entity settings.
+Each selected camera is also available as standard RTSP:
+
+```text
+rtsp://192.168.1.20:8100/CAMERA_UID
+```
+
+For go2rtc/Frigate, use an address reachable from the Frigate container:
+
+```yaml
+go2rtc:
+  streams:
+    front_cam:
+      - rtsp://192.168.1.20:8100/CAMERA_UID
+```
+
+The RTSP server uses TCP interleaving and forwards native H.264 without
+transcoding. Opening one URL wakes only that camera; the first consumer starts
+its shared session and the final consumer starts the configured idle timeout.
+
+Create one integration entry per selected camera when you want separate HA
+entities. For legacy single-camera mode with alias `cabin`, Home Assistant
+creates `camera.cabin`; multi-camera entries use their selected camera IDs.
 
 ## Daily use
 
@@ -204,9 +239,9 @@ problems.
 
 ## Security
 
-- Use an O-KAM account that contains only the camera intended for Home Assistant.
+- Select only the intended camera UIDs in `camera_uids`.
 - Keep the O-KAM password and local API token private.
-- Do not expose or port-forward TCP port 8099 to the internet.
+- Do not expose or port-forward TCP ports 8099 or 8100 to the internet.
 - Rotate the local API token if it is accidentally disclosed.
 - Logs and issue reports must not contain credentials, tokens, or camera IDs.
 
@@ -214,12 +249,13 @@ See [SECURITY.md](SECURITY.md) for the complete security policy.
 
 ## Technical overview
 
-The app enumerates the camera through the fixed official account service,
+The app enumerates cameras through the fixed official account service,
 wakes it through the official low-power service, and opens a native P2P
 transport. On `aarch64`, a minimal Bionic compatibility layer hosts the official
 ARM64 transport library. On `amd64`, a small pure-Python client implements the
 same encrypted camera protocol directly. H.264 is forwarded to Home Assistant
-without transcoding. FFmpeg is invoked only when a JPEG snapshot is requested.
+and RTSP without transcoding. FFmpeg is used for JPEG snapshots and the legacy
+HTTP MPEG-TS compatibility endpoint with `-c:v copy`.
 Required official artifacts are downloaded from their pinned source and
 verified before use.
 

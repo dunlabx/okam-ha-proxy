@@ -9,7 +9,13 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import OkamApi, OkamApiError
-from .const import CONF_CAMERA_ID, CONF_SNAPSHOT_INTERVAL, DEFAULT_SNAPSHOT_INTERVAL, DOMAIN
+from .const import (
+    CONF_CAMERA_ID,
+    CONF_CAMERA_UID,
+    CONF_SNAPSHOT_INTERVAL,
+    DEFAULT_SNAPSHOT_INTERVAL,
+    DOMAIN,
+)
 
 
 class OkamCoordinator(DataUpdateCoordinator[dict]):
@@ -28,10 +34,25 @@ class OkamCoordinator(DataUpdateCoordinator[dict]):
             config_entry=entry,
         )
         self.api = api
-        self.camera_id = str(entry.options.get(CONF_CAMERA_ID, entry.data[CONF_CAMERA_ID]))
+        self.camera_uid = str(
+            entry.options.get(
+                CONF_CAMERA_UID,
+                entry.data.get(
+                    CONF_CAMERA_UID,
+                    entry.options.get(CONF_CAMERA_ID, entry.data[CONF_CAMERA_ID]),
+                ),
+            )
+        )
+        # Keep camera_id as the stable UID used by the bridge API. Existing
+        # callers and entity object IDs continue to use this attribute.
+        self.camera_id = self.camera_uid
+        self.camera_name = str(entry.data.get("camera_name", self.camera_uid))
 
     async def _async_update_data(self) -> dict:
         try:
-            return await self.api.status(self.camera_id)
+            result = await self.api.status(self.camera_uid)
+            if isinstance(result.get("name"), str) and result["name"]:
+                self.camera_name = result["name"]
+            return result
         except OkamApiError as exc:
             raise UpdateFailed(str(exc)) from exc

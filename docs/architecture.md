@@ -7,7 +7,7 @@ integration. Both are distributed from this repository, support `aarch64` and
 ## Data flow
 
 ```text
-Home Assistant camera entity
+Home Assistant camera entities
         │
         │ authenticated local HTTP
         ▼
@@ -15,10 +15,10 @@ O-KAM Native Bridge app
         │
         ├── account enumeration and low-power wake
         │
-        └── native P2P session
-                    │
-                    ▼
-              O-KAM camera
+        └── per-camera registry
+              ├── NativeStreamSession A ── O-KAM camera A
+              ├── NativeStreamSession B ── O-KAM camera B
+              └── shared RTSP-over-TCP fan-out
 ```
 
 The integration polls a lightweight status endpoint. While the camera is idle
@@ -27,16 +27,21 @@ connection. Opening live view asks the app for a live source and wakes the
 camera. Once media is flowing, still-image requests attach to the existing
 session and produce a real snapshot.
 
+The authenticated HTTP API accepts either the legacy local alias or the
+selected UID in `/api/cameras/<identifier>/...`. The RTSP listener uses the UID
+path directly: `rtsp://HOST:8100/<camera_uid>`.
+
 ## Camera lifecycle
 
-1. The first live viewer acquires a stream subscription.
-2. The app requests a low-power wake and starts one native camera session.
-3. The entity reports `waking` until the first H.264 bytes arrive.
-4. Annex-B H.264 frames are distributed to every active viewer.
-5. A snapshot request attaches to the same session and decodes one frame to
+1. Account enumeration returns all devices, then `camera_uids` selects an exact subset.
+2. The first viewer of one selected camera acquires a stream subscription.
+3. The app requests a low-power wake and starts only that camera's native session.
+4. The entity reports `waking` until the first H.264 bytes arrive.
+5. Annex-B H.264 frames are distributed to HTTP and RTSP viewers.
+6. A snapshot request attaches to the existing session and decodes one frame to
    JPEG in memory.
-6. When the final subscription closes, an idle timer starts.
-7. At the end of the idle timeout, the app sends the camera's stream-stop
+7. When the final subscription closes, an idle timer starts for that camera.
+8. At the end of the idle timeout, the app sends the camera's stream-stop
    request and disconnects the P2P client cleanly.
 
 Queue sizes and request bodies are bounded. A slow viewer drops older queued
@@ -63,11 +68,13 @@ muxer, and required filters used to create snapshots.
 
 - Account enumeration uses the fixed official HTTPS account origin.
 - Camera wake and P2P traffic are outbound from the app.
-- TCP port 8099 exposes the bridge API on the local Home Assistant host.
+- TCP port 8099 exposes the bridge API and TCP port 8100 exposes RTSP on the
+  local Home Assistant host (both are configurable for standalone deployments).
 - Camera API routes require the user-created bearer token.
 - The raw stream uses a separate random token generated at each app start.
 - `/health` and `/ready` are intentionally unauthenticated and contain no
-  credentials, vendor camera identifiers, or account tokens.
+  credentials, vendor camera identifiers, or account tokens. RTSP is intended
+  for a trusted LAN and currently has no separate authentication.
 
 ## Secret handling
 

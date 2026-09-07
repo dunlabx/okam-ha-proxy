@@ -202,7 +202,10 @@ class NativeStreamSession:
     def _record_unit(self, unit: bytes) -> None:
         if len(unit) <= len(ANNEX_B_START) or len(unit) > MAX_PREAMBLE_BYTES:
             return
-        kind = unit[len(ANNEX_B_START)] & 0x1F
+        prefix = 4 if unit.startswith(b"\x00\x00\x00\x01") else len(ANNEX_B_START)
+        if len(unit) <= prefix:
+            return
+        kind = unit[prefix] & 0x1F
         if kind == 7:
             self._sps = unit
         elif kind == 8:
@@ -227,6 +230,12 @@ class NativeStreamSession:
                 last_error=self._last_error,
                 media_ready=self._media_ready,
             )
+
+    def parameter_sets(self) -> tuple[bytes, bytes]:
+        """Return the latest SPS/PPS, if a stream has already started."""
+
+        with self._lock:
+            return self._sps, self._pps
 
     def close(self) -> None:
         with self._lock:

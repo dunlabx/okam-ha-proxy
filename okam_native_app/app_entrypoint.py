@@ -14,8 +14,19 @@ import threading
 import time
 from pathlib import Path
 
-from okam_native.account import AccountDevice, AccountError, Eye4AccountClient
-from okam_native.bridge import CameraBridge, QuietThreadingHTTPServer, make_handler
+from okam_native.account import (
+    AccountDevice,
+    AccountError,
+    Eye4AccountClient,
+    normalize_camera_uids,
+    select_account_devices,
+)
+from okam_native.bridge import (
+    BridgeRegistry,
+    CameraBridge,
+    QuietThreadingHTTPServer,
+    make_handler,
+)
 from okam_native.p2p import (
     P2PError,
     diagnostic_line,
@@ -30,6 +41,7 @@ from okam_native.p2p import (
 )
 from okam_native.session import NativeStreamSession
 from okam_native.wakeup import WakeError, load_wake_credentials, wake_camera
+from okam_native.rtsp import RTSPServer
 
 
 DATA = Path("/data")
@@ -64,7 +76,7 @@ STATUS: dict[str, object] = {
     "phase": "starting",
 }
 LOCK = threading.Lock()
-BRIDGE: CameraBridge | None = None
+BRIDGES = BridgeRegistry()
 
 
 def set_status(**values: object) -> None:
@@ -75,30 +87,26 @@ def set_status(**values: object) -> None:
 def get_status() -> dict[str, object]:
     with LOCK:
         payload = dict(STATUS)
-        bridge = BRIDGE
-    if bridge is not None:
-        session = bridge.session.status()
-        payload.update(
-            stream_running=session.running,
-            stream_viewers=session.viewers,
-            stream_media_ready=session.media_ready,
-            idle_timeout_seconds=int(bridge.session.idle_timeout),
-            clean_disconnect=session.clean_disconnect,
-            stream_error=session.last_error,
-            phase=(
-                "streaming"
-                if session.running and session.media_ready
-                else "camera_waking"
-                if session.running
-                else "bridge_ready"
-            ),
-        )
+    aggregate = BRIDGES.status()
+    # /ready is unauthenticated and must remain a health signal, not a camera
+    # inventory endpoint. Detailed per-camera state is available through the
+    # token-protected /api/cameras/<id>/status route.
+    aggregate.pop("cameras", None)
+    payload.update(aggregate)
+    payload["camera_ready"] = aggregate["ready_camera_count"] > 0
+    payload["p2p_ready"] = aggregate["ready_camera_count"] > 0
+    payload["phase"] = (
+        "streaming"
+        if aggregate["streaming_camera_count"]
+        else "bridge_ready"
+        if aggregate["ready_camera_count"]
+        else str(payload.get("phase", "starting"))
+    )
     return payload
 
 
-def get_bridge() -> CameraBridge | None:
-    with LOCK:
-        return BRIDGE
+def get_bridge() -> BridgeRegistry:
+    return BRIDGES
 
 
 def load_vendor_runtime() -> None:
@@ -169,7 +177,7 @@ def load_options() -> dict[str, object]:
     return value
 
 
-def enumerate_account() -> AccountDevice | None:
+def enumerate_account() -> list[AccountDevice] | None:
     options = load_options()
     username = options.get("account_username")
     password = options.get("account_password")
@@ -185,16 +193,19 @@ def enumerate_account() -> AccountDevice | None:
     finally:
         username = ""
         password = ""
-    if len(devices) != 1:
-        raise AccountError("O-KAM account must expose exactly one camera")
+    raw_uids = options.get("camera_uids")
+    if raw_uids is None and "camera_uid" in options:
+        raw_uids = [options.get("camera_uid")]
+    camera_uids = normalize_camera_uids(raw_uids)
+    selected = select_account_devices(devices, camera_uids)
     set_status(
         account_ready=True,
-        device_count=1,
-        camera_alias=alias,
+        device_count=len(selected),
+        account_device_count=len(devices),
         phase="account_enumerated",
     )
-    print("account_enumerated=true device_count=1", flush=True)
-    return devices[0]
+    print(f"account_enumerated=true device_count={len(selected)}", flush=True)
+    return selected
 
 
 def p2p_environment() -> dict[str, str]:
@@ -381,10 +392,11 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
     raise P2PError("camera did not establish a native P2P session")
 
 
-def configure_bridge(device: AccountDevice) -> CameraBridge | None:
+def configure_bridge(
+    device: AccountDevice, *, selected_count: int, legacy_single: bool
+) -> CameraBridge | None:
     """Prepare the long-lived, on-demand runtime without waking the camera."""
 
-    global BRIDGE
     options = load_options()
     api_token = options.get("api_token")
     alias = options.get("camera_id") or "cabin"
@@ -427,30 +439,44 @@ def configure_bridge(device: AccountDevice) -> CameraBridge | None:
         )
 
     session = NativeStreamSession(start_stream, idle_timeout=float(idle_timeout))
+    camera_id = alias if legacy_single and selected_count == 1 else device.uid
     bridge = CameraBridge(
-        camera_id=alias,
+        camera_id=camera_id,
+        camera_uid=device.uid,
         camera_name=device.name,
         api_token=api_token,
         session=session,
         ffmpeg=str(FFMPEG),
     )
-    with LOCK:
-        BRIDGE = bridge
+    BRIDGES.add(bridge)
     set_status(
         camera_ready=True,
         configuration_required=False,
         phase="bridge_ready",
         idle_timeout_seconds=idle_timeout,
     )
-    print("bridge_ready=true camera_count=1", flush=True)
+    print("bridge_ready=true", flush=True)
     return bridge
 
 
 def main() -> int:
+    options = load_options()
+    api_port = options.get("api_port", 8099)
+    rtsp_port = options.get("rtsp_port", 8100)
+    if (
+        type(api_port) is not int
+        or not 1 <= api_port <= 65535
+        or type(rtsp_port) is not int
+        or not 1 <= rtsp_port <= 65535
+        or api_port == rtsp_port
+    ):
+        raise RuntimeError("api_port and rtsp_port must be valid and different")
     server = QuietThreadingHTTPServer(
-        ("0.0.0.0", 8099), make_handler(get_status, get_bridge)
+        ("0.0.0.0", api_port), make_handler(get_status, get_bridge)
     )
+    rtsp_server = RTSPServer(("0.0.0.0", rtsp_port), BRIDGES)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=rtsp_server.serve_forever, daemon=True).start()
     stop = threading.Event()
 
     def request_stop(_signum: int, _frame: object) -> None:
@@ -460,10 +486,27 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     try:
         load_vendor_runtime()
-        device = enumerate_account()
-        if device is not None:
-            run_p2p_acceptance(device)
-            configure_bridge(device)
+        devices = enumerate_account()
+        if devices is not None:
+            selection = options.get("camera_uids")
+            legacy_single = selection is None and "camera_uid" not in options
+            for device in devices:
+                try:
+                    run_p2p_acceptance(device)
+                    configure_bridge(
+                        device,
+                        selected_count=len(devices),
+                        legacy_single=legacy_single,
+                    )
+                except Exception as error:
+                    # A single camera may fail to wake/authenticate while the
+                    # remaining selected cameras continue to be registered.
+                    print(
+                        f"camera_runtime_failed error={type(error).__name__}",
+                        flush=True,
+                    )
+            if not BRIDGES.values():
+                raise RuntimeError("no selected camera runtime is available")
     except Exception as error:
         phase = "startup_error" if STATUS["loader_ready"] else "native_loader_error"
         detail = str(error).replace(" ", "_") if isinstance(error, P2PError) else None
@@ -471,9 +514,9 @@ def main() -> int:
         suffix = f" detail={detail}" if detail else ""
         print(f"startup_ready=false error={type(error).__name__}{suffix}", flush=True)
     stop.wait()
-    bridge = get_bridge()
-    if bridge is not None:
-        bridge.session.close()
+    BRIDGES.close()
+    rtsp_server.shutdown()
+    rtsp_server.server_close()
     server.shutdown()
     server.server_close()
     return 0

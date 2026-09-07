@@ -4,7 +4,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from okam_native.account import AccountError, Eye4AccountClient
+from okam_native.account import (
+    AccountDevice,
+    AccountError,
+    Eye4AccountClient,
+    normalize_camera_uids,
+    select_account_devices,
+)
 
 
 def test_official_account_enumeration_flow() -> None:
@@ -58,3 +64,31 @@ def test_account_errors_never_include_credentials() -> None:
         Eye4AccountClient(opener=opener).enumerate("viewer@example.com", "secret")
     assert "viewer@example.com" not in str(caught.value)
     assert "secret" not in str(caught.value)
+
+
+def test_camera_uid_selection_is_exact_and_bounded_to_requested_subset() -> None:
+    devices = [
+        AccountDevice("A", "Front", "pw-a"),
+        AccountDevice("B", "Back", "pw-b"),
+        AccountDevice("C", "Side", "pw-c"),
+    ]
+    assert [item.uid for item in select_account_devices(devices, [" C ", "A"])] == [
+        "C",
+        "A",
+    ]
+
+
+def test_camera_uid_selection_rejects_duplicates_empty_and_missing_values() -> None:
+    devices = [AccountDevice("A", "Front", "pw-a")]
+    with pytest.raises(AccountError):
+        normalize_camera_uids(["A", " A "])
+    with pytest.raises(AccountError):
+        normalize_camera_uids([])
+    with pytest.raises(AccountError):
+        select_account_devices(devices, ["missing"])
+
+
+def test_multi_camera_accounts_require_explicit_selection() -> None:
+    devices = [AccountDevice("A", "Front", "pw-a"), AccountDevice("B", "Back", "pw-b")]
+    with pytest.raises(AccountError, match="camera_uids"):
+        select_account_devices(devices)

@@ -1,7 +1,7 @@
 configuration:
   account_username:
     name: O-KAM account email
-    description: Email address of an O-KAM account that can view exactly one camera.
+    description: Email address of an O-KAM account that can view the selected cameras.
   account_password:
     name: O-KAM account password
     description: Password for the O-KAM account.
@@ -11,6 +11,15 @@ configuration:
   camera_id:
     name: Camera alias
     description: Local Home Assistant name for the camera, for example cabin.
+  camera_uids:
+    name: Camera UIDs
+    description: Optional exact list of camera UIDs to expose; required when the account contains multiple cameras.
+  api_port:
+    name: API port
+    description: Local HTTP API port. The default is 8099.
+  rtsp_port:
+    name: RTSP port
+    description: Local RTSP-over-TCP streaming port. The default is 8100.
   idle_timeout_seconds:
     name: Idle disconnect delay
     description: Seconds to wait after the final viewer closes before stopping and disconnecting the camera.
@@ -28,3 +37,4 @@ configuration:
     description: Wake, connect, authenticate, receive H.264, create one JPEG, and disconnect when the app starts. Leave disabled for normal use.
 network:
   8099/tcp: Local bridge API used by the Home Assistant integration
+  8100/tcp: RTSP camera streaming for Frigate, go2rtc, VLC, and ffmpeg
