@@ -142,12 +142,12 @@ jobs:
           import gzip, io, json, sys, tarfile
           with tarfile.open(sys.argv[1]) as image:
               index = json.load(image.extractfile("index.json"))
-              manifest = index["manifests"][0]["digest"].replace(":", "/")
+              manifest = "blobs/" + index["manifests"][0]["digest"].replace(":", "/")
               descriptor = json.loads(image.extractfile(manifest).read())
               names = set()
               texts = []
               for layer in descriptor["layers"]:
-                  blob_name = layer["digest"].replace(":", "/")
+                  blob_name = "blobs/" + layer["digest"].replace(":", "/")
                   blob = image.extractfile(blob_name).read()
                   with tarfile.open(fileobj=gzip.GzipFile(fileobj=io.BytesIO(blob))) as layer_tar:
                       for member in layer_tar:
