@@ -142,8 +142,14 @@ jobs:
           import gzip, io, json, sys, tarfile
           with tarfile.open(sys.argv[1]) as image:
               index = json.load(image.extractfile("index.json"))
-              manifest = "blobs/" + index["manifests"][0]["digest"].replace(":", "/")
-              descriptor = json.loads(image.extractfile(manifest).read())
+              descriptor = None
+              for candidate in index["manifests"]:
+                  manifest = "blobs/" + candidate["digest"].replace(":", "/")
+                  value = json.loads(image.extractfile(manifest).read())
+                  if "layers" in value:
+                      descriptor = value
+                      break
+              assert descriptor is not None, "OCI image manifest not found"
               names = set()
               texts = []
               for layer in descriptor["layers"]:
