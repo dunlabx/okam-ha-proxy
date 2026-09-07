@@ -5,7 +5,7 @@
 1. Confirm that the repository URL is exactly:
 
    ```text
-   https://github.com/oleandor/okam-ha-native
+   https://github.com/dunlabx/okam-ha-proxy
    ```
 
 2. Open **Settings → Apps → App store**, open **Repositories**, remove any

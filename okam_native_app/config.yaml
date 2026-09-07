@@ -1,9 +1,8 @@
-name: O-KAM Native Bridge
+name: O-KAM HA Proxy
 version: 1.2.1
-slug: okam_native
+slug: okam_ha_proxy
 description: Self-contained native O-KAM camera bridge for Home Assistant
-url: https://github.com/oleandor/okam-ha-native
-image: ghcr.io/oleandor/okam-ha-native
+url: https://github.com/dunlabx/okam-ha-proxy
 arch:
   - aarch64
   - amd64
@@ -21,6 +20,7 @@ options:
   account_password: null
   api_token: null
   camera_id: cabin
+  camera_uids: null
   api_port: 8099
   rtsp_port: 8100
   idle_timeout_seconds: 120

@@ -1,4 +1,4 @@
-# O-KAM Native Bridge
+# O-KAM HA Proxy
 
 Connect selected O-KAM Pro cameras directly to Home Assistant on `aarch64` and
 `amd64` systems. The app provides native live video, full-resolution snapshots,

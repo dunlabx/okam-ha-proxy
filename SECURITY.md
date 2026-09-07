@@ -7,7 +7,7 @@ Security fixes are provided for the latest published release.
 ## Reporting a vulnerability
 
 Report vulnerabilities privately through
-[GitHub Security Advisories](https://github.com/oleandor/okam-ha-native/security/advisories/new).
+[GitHub Security Advisories](https://github.com/dunlabx/okam-ha-proxy/security/advisories/new).
 Do not open a public issue for an undisclosed vulnerability.
 
 ## Credential safety

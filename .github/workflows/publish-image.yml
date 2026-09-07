@@ -94,7 +94,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           push: true
           tags: |
-            ghcr.io/oleandor/okam-ha-native:${{ needs.prepare.outputs.version }}-${{ matrix.ha_arch }}
+            ghcr.io/dunlabx/okam-ha-proxy:${{ needs.prepare.outputs.version }}-${{ matrix.ha_arch }}
           build-args: |
             BUILD_VERSION=${{ needs.prepare.outputs.version }}
             BUILD_ARCH=${{ matrix.ha_arch }}
@@ -119,7 +119,7 @@ jobs:
           MOVE_LATEST: ${{ needs.prepare.outputs.move_latest }}
         run: |
           set -eu
-          image="ghcr.io/oleandor/okam-ha-native"
+          image="ghcr.io/dunlabx/okam-ha-proxy"
           tags=(--tag "$image:$VERSION")
           if [ "$MOVE_LATEST" = "true" ]; then
             tags+=(--tag "$image:latest")

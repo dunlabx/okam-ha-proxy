@@ -1,6 +1,6 @@
-# O-KAM Native Bridge
+# O-KAM HA Proxy
 
-O-KAM Native Bridge connects selected O-KAM Pro cameras directly to Home Assistant on
+O-KAM HA Proxy connects selected O-KAM Pro cameras directly to Home Assistant on
 `aarch64` and `amd64` systems. It provides live H.264 video, JPEG snapshots,
 automatic camera wake-up, shared viewing, and automatic idle disconnect.
 
@@ -71,7 +71,7 @@ authentication, so keep it on a trusted LAN and do not port-forward it.
 ## Home Assistant integration
 
 Install **O-KAM Native Bridge** from HACS using
-`https://github.com/oleandor/okam-ha-native` as a custom integration repository.
+`https://github.com/dunlabx/okam-ha-proxy` as a custom integration repository.
 Restart Home Assistant, then add the integration from **Settings → Devices &
 services**.
 
@@ -97,6 +97,6 @@ version 1.1.1 retain their selected value; use the integration's **Configure**
 action to change an older 30-second value to 120 seconds.
 
 Do not expose TCP port 8099 to the internet. See the repository
-[README](https://github.com/oleandor/okam-ha-native#readme) and
-[troubleshooting guide](https://github.com/oleandor/okam-ha-native/blob/main/docs/troubleshooting.md)
+[README](https://github.com/dunlabx/okam-ha-proxy#readme) and
+[troubleshooting guide](https://github.com/dunlabx/okam-ha-proxy/blob/main/docs/troubleshooting.md)
 for complete installation and support information.

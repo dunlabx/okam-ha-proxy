@@ -53,25 +53,25 @@ if you are unsure.
 ### 1. Check the O-KAM account
 
 Use the normal O-KAM account that can open the camera's live view. It may be
-the camera owner account or an account to which the camera was shared. The
-For an account with more than one camera, select the exact UIDs in
+the camera owner account or an account to which the camera was shared. For an
+account with more than one camera, select the exact UIDs in
 `camera_uids`; the bridge never picks a camera implicitly.
 
 Sign in with that account in the O-KAM mobile app once and confirm that live
 view works. Keep its email address and password available for app
 configuration.
 
-### 2. Install the O-KAM Native Bridge app
+### 2. Install the O-KAM HA Proxy app
 
 1. In Home Assistant, open **Settings → Apps → App store**.
 2. Open the app-store menu and select **Repositories**.
 3. Add this repository:
 
    ```text
-   https://github.com/oleandor/okam-ha-native
+   https://github.com/dunlabx/okam-ha-proxy
    ```
 
-4. Find and install **O-KAM Native Bridge**.
+4. Find and install **O-KAM HA Proxy**.
 5. Open its **Configuration** tab and enter:
 
    | Option | What to enter |
@@ -123,7 +123,7 @@ This is not the O-KAM account password.
 #### Recommended: HACS
 
 1. Open **HACS** in Home Assistant.
-2. Add `https://github.com/oleandor/okam-ha-native` as a custom repository of
+2. Add `https://github.com/dunlabx/okam-ha-proxy` as a custom repository of
    type **Integration**.
 3. Find and install **O-KAM Native Bridge**.
 4. Restart Home Assistant when HACS asks you to.
@@ -264,7 +264,7 @@ More detail is available in [Architecture](docs/architecture.md).
 ## Support and license
 
 Open an issue at
-[github.com/oleandor/okam-ha-native/issues](https://github.com/oleandor/okam-ha-native/issues)
+[github.com/dunlabx/okam-ha-proxy/issues](https://github.com/dunlabx/okam-ha-proxy/issues)
 with the app version, hardware model, Home Assistant version, app log, and
 the redacted `/ready` response. Never include passwords, API tokens, or camera
 identifiers.

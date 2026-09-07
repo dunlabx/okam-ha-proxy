@@ -1,12 +1,12 @@
 # Testing a candidate build beside the installed add-on
 
-This is a **local** Home Assistant add-on that runs a candidate image without
-touching the installed O-KAM Native Bridge. It differs from the production
+This is a **local** Home Assistant add-on that runs a candidate build without
+touching the installed O-KAM HA Proxy. It differs from the production
 add-on in every way that would otherwise collide:
 
 | | Installed add-on | This test add-on |
 | --- | --- | --- |
-| Slug | `okam_native` | `okam_native_test` |
+| Slug | `okam_ha_proxy` | `okam_ha_proxy_test` |
 | Host port | 8099 | 8098 |
 | Start on boot | auto | manual |
 | Image tag | the released version | `1.2.0-test1` |
@@ -16,8 +16,8 @@ this one leaves the installed add-on untouched.
 
 ## Install
 
-1. Copy this directory to the Pi as `/addons/okam_native_test/`, so that
-   `/addons/okam_native_test/config.yaml` exists. The Samba or the file editor
+1. Copy this directory to the Pi as `/addons/okam_ha_proxy_test/`, so that
+   `/addons/okam_ha_proxy_test/config.yaml` exists. The Samba or the file editor
    add-on both work.
 2. Settings, Add-ons, Add-on store, three-dot menu, Check for updates.
 3. The add-on appears under *Local add-ons*. Install it.
@@ -30,8 +30,8 @@ this one leaves the installed add-on untouched.
 
 ```
 native_loader_ready=true
-account_enumerated=true device_count=1
-bridge_ready=true camera_count=1
+account_enumerated=true device_count=<selected-count>
+bridge_ready=true
 ```
 
 ## Point Home Assistant at it
@@ -42,7 +42,7 @@ the `api_token` you configured here.
 
 ## Remove afterwards
 
-Stop and uninstall the add-on, delete `/addons/okam_native_test/`, and remove
+Stop and uninstall the add-on, delete `/addons/okam_ha_proxy_test/`, and remove
 the extra integration entry. The installed add-on and its entity are unaffected
 throughout.
 

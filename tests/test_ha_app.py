@@ -4,9 +4,21 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 
 
+def test_fork_repository_and_addon_identity_are_local() -> None:
+    repository = (ROOT / "repository.yaml").read_text(encoding="utf-8")
+    config = (ROOT / "okam_native_app" / "config.yaml").read_text(encoding="utf-8")
+    assert "name: O-KAM HA Proxy" in repository
+    assert "url: https://github.com/dunlabx/okam-ha-proxy" in repository
+    assert "maintainer: dunlabx" in repository
+    assert "name: O-KAM HA Proxy" in config
+    assert "slug: okam_ha_proxy" in config
+    assert "url: https://github.com/dunlabx/okam-ha-proxy" in config
+    assert "image:" not in config
+
+
 def test_native_bridge_is_a_prebuilt_64_bit_ha_app() -> None:
     config = (ROOT / "okam_native_app" / "config.yaml").read_text(encoding="utf-8")
-    assert "image: ghcr.io/oleandor/okam-ha-native" in config
+    assert "image:" not in config
     assert "- aarch64" in config
     assert "- amd64" in config
     assert "boot: auto" in config
@@ -16,6 +28,7 @@ def test_native_bridge_is_a_prebuilt_64_bit_ha_app() -> None:
     assert "idle_timeout_seconds: 120" in config
     assert "api_port: 8099" in config
     assert "rtsp_port: 8100" in config
+    assert "camera_uids: null" in config
     assert 'camera_uids: "[str]?"' in config
     assert "account_username: email" in config
     assert "account_password: password" in config
@@ -131,7 +144,7 @@ def test_user_documentation_is_current_and_complete() -> None:
     assert "wine" not in lowered
     assert "box64" not in lowered
     assert "xvfb" not in lowered
-    assert "https://github.com/oleandor/okam-ha-native" in combined
+    assert "https://github.com/dunlabx/okam-ha-proxy" in combined
     assert "custom_components/okam" in combined
     assert "camera.cabin" in combined
     assert "secondary" not in lowered
@@ -157,6 +170,8 @@ def test_publish_workflow_passes_the_runtime_stage_selector() -> None:
     assert "TARGETARCH=${{ matrix.docker_arch }}" in workflow
     assert "docker_arch: arm64" in workflow
     assert "docker_arch: amd64" in workflow
+    assert "ghcr.io/dunlabx/okam-ha-proxy" in workflow
+    assert "ghcr.io/oleandor/okam-ha-native" not in workflow
 
 
 def test_image_ffmpeg_can_mux_the_live_stream() -> None:
@@ -188,8 +203,8 @@ def test_test_addon_cannot_collide_with_the_installed_one() -> None:
         ROOT / "okam_native_app" / "test-addon" / "config.yaml"
     ).read_text(encoding="utf-8")
 
-    assert "slug: okam_native\n" in installed
-    assert "slug: okam_native_test\n" in candidate
+    assert "slug: okam_ha_proxy\n" in installed
+    assert "slug: okam_ha_proxy_test\n" in candidate
     # Distinct host port, so both can run side by side.
     assert "8099/tcp: 8099" in installed
     assert "8099/tcp: 8098" in candidate
