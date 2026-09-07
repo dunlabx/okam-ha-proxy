@@ -122,7 +122,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         if path.is_dir() and path.name != "__pycache__"
     )
     assert integration_dirs == ["okam"]
-    icon = ROOT / "brand" / "icon.png"
+    icon = ROOT / "custom_components" / "okam" / "brand" / "icon.png"
     assert icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
 
 
