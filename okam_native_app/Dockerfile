@@ -99,7 +99,7 @@ ARG BUILD_ARCH
 LABEL io.hass.version=$BUILD_VERSION \
       io.hass.arch=$BUILD_ARCH \
       io.hass.type="app" \
-      io.hass.name="O-KAM Native Bridge"
+      io.hass.name="O-KAM HA Proxy"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \

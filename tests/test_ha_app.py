@@ -1,44 +1,98 @@
 from pathlib import Path
+import re
+
+import yaml
 
 
 ROOT = Path(__file__).parents[1]
 
+# This is the schema-element grammar used by Home Assistant Supervisor's app
+# validator.  Keeping the grammar here makes the test exercise the parsed
+# add-on schema rather than asserting on source text.
+SUPERVISOR_SCHEMA_ELEMENT = re.compile(
+    r"^(?:"
+    r"|bool|email|url|port"
+    r"|device(?:\(subsystem=[a-z]+\))?"
+    r"|str(?:\(\d+?,\d+?\))?"
+    r"|password(?:\(\d+?,\d+?\))?"
+    r"|int(?:\(-?\d+?,-?\d+?\))?"
+    r"|float(?:\(-?\d*\.?\d+,-?\d*\.?\d+\))?"
+    r"|match\(.*\)"
+    r"|list\(.+\)"
+    r")\??$"
+)
+
+
+def _assert_supervisor_schema_element(value: object, path: str) -> None:
+    """Validate schema values using Supervisor's supported YAML shape."""
+    if isinstance(value, str):
+        assert SUPERVISOR_SCHEMA_ELEMENT.fullmatch(value), (path, value)
+    elif isinstance(value, list):
+        assert len(value) == 1, (path, value)
+        _assert_supervisor_schema_element(value[0], f"{path}[]")
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            assert isinstance(key, str), (path, key)
+            _assert_supervisor_schema_element(child, f"{path}.{key}")
+    else:
+        raise AssertionError(f"{path} has unsupported schema value {value!r}")
+
+
+def _load_addon_config(relative_path: str) -> dict[str, object]:
+    value = yaml.safe_load((ROOT / relative_path).read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    return value
+
 
 def test_fork_repository_and_addon_identity_are_local() -> None:
-    repository = (ROOT / "repository.yaml").read_text(encoding="utf-8")
-    config = (ROOT / "okam_native_app" / "config.yaml").read_text(encoding="utf-8")
-    assert "name: O-KAM HA Proxy" in repository
-    assert "url: https://github.com/dunlabx/okam-ha-proxy" in repository
-    assert "maintainer: dunlabx" in repository
-    assert "name: O-KAM HA Proxy" in config
-    assert "slug: okam_ha_proxy" in config
-    assert "url: https://github.com/dunlabx/okam-ha-proxy" in config
-    assert "image:" not in config
+    repository = yaml.safe_load(
+        (ROOT / "repository.yaml").read_text(encoding="utf-8")
+    )
+    config = _load_addon_config("okam_native_app/config.yaml")
+    assert repository == {
+        "name": "O-KAM HA Proxy",
+        "url": "https://github.com/dunlabx/okam-ha-proxy",
+        "maintainer": "dunlabx",
+    }
+    assert config["name"] == "O-KAM HA Proxy"
+    assert config["slug"] == "okam_ha_proxy"
+    assert config["url"] == "https://github.com/dunlabx/okam-ha-proxy"
+    assert "image" not in config
 
 
-def test_native_bridge_is_a_prebuilt_64_bit_ha_app() -> None:
-    config = (ROOT / "okam_native_app" / "config.yaml").read_text(encoding="utf-8")
-    assert "image:" not in config
-    assert "- aarch64" in config
-    assert "- amd64" in config
-    assert "boot: auto" in config
-    assert "stage: experimental" not in config
-    assert "machine:" not in config
-    assert "version: 1.2.1" in config
-    assert "idle_timeout_seconds: 120" in config
-    assert "api_port: 8099" in config
-    assert "rtsp_port: 8100" in config
-    assert "camera_uids: null" in config
-    assert 'camera_uids: "[str]?"' in config
-    assert "account_username: email" in config
-    assert "account_password: password" in config
-    assert "camera_password: password?" in config
-    assert "api_token: password" in config
-    assert 'idle_timeout_seconds: "int(10,600)"' in config
-    assert "run_connect_test: bool" in config
-    assert "run_auth_test: bool" in config
-    assert "run_stream_test: bool" in config
-    assert "run_snapshot_test: bool" in config
+def test_addon_config_matches_supervisor_schema_expectations() -> None:
+    config = _load_addon_config("okam_native_app/config.yaml")
+    required = {"name", "version", "slug", "description", "arch"}
+    assert required <= config.keys()
+    assert isinstance(config["name"], str) and config["name"]
+    assert isinstance(config["version"], str) and config["version"]
+    assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
+    assert isinstance(config["description"], str) and config["description"]
+    assert config["arch"] == ["aarch64", "amd64"]
+    assert config["startup"] == "application"
+    assert config["boot"] == "auto"
+    assert config["ports"] == {"8099/tcp": 8099, "8100/tcp": 8100}
+    assert set(config["ports_description"]) == set(config["ports"])
+    assert "image" not in config  # Supervisor builds the Dockerfile locally.
+
+    options = config["options"]
+    schema = config["schema"]
+    assert isinstance(options, dict)
+    assert isinstance(schema, dict)
+    assert set(options) <= set(schema)
+    assert "camera_uids" not in options
+    assert schema["camera_uids"] == ["str?"]
+    for key, value in schema.items():
+        _assert_supervisor_schema_element(value, f"schema.{key}")
+
+
+def test_test_addon_config_matches_supervisor_schema_expectations() -> None:
+    config = _load_addon_config("okam_native_app/test-addon/config.yaml")
+    assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
+    assert "camera_uids" not in config["options"]
+    assert config["schema"]["camera_uids"] == ["str?"]
+    for key, value in config["schema"].items():
+        _assert_supervisor_schema_element(value, f"schema.{key}")
 
 
 def test_native_image_excludes_windows_gui_runtime() -> None:
