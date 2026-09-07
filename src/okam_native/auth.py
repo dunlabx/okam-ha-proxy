@@ -8,7 +8,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, TypeVar
 
 from .p2p import AuthenticationResult, P2PError
 
@@ -130,6 +130,8 @@ class CredentialSourceCache:
 
 Attempt = Callable[[CredentialCandidate], AuthenticationResult]
 Log = Callable[[str], None]
+Resource = TypeVar("Resource")
+ResourceAttempt = Callable[[CredentialCandidate], tuple[AuthenticationResult, Resource]]
 
 
 class CameraAuthenticator:
@@ -196,6 +198,86 @@ class CameraAuthenticator:
                         f"persisted={str(persisted).lower()}"
                     )
                     return candidate, result
+                if not explicit_rejection:
+                    self._logger(
+                        f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
+                        "result=transport_failure"
+                    )
+                    raise AuthenticationTransportError(
+                        "native cycle did not return an explicit authentication rejection"
+                    )
+                results.append(result.login_result)
+                self._logger(
+                    f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
+                    f"result=failed login_result={result.login_result}"
+                )
+                if cached:
+                    self.cache.invalidate(uid)
+                    self._logger(f"camera_auth_cache_invalidated uid={uid}")
+        raise AuthenticationRejected(uid, tuple(results))
+
+    def authenticate_resource(
+        self,
+        uid: str,
+        candidates: Iterable[CredentialCandidate],
+        attempt: ResourceAttempt[Resource],
+        discard: Callable[[Resource], None] | None = None,
+    ) -> tuple[CredentialCandidate, AuthenticationResult, Resource]:
+        """Authenticate while retaining the successful session resource.
+
+        Stream consumers must use the same native session that accepted the
+        credential. Each rejected candidate is fully discarded before the
+        next candidate is tried, so no probe/login pair can bypass this path.
+        """
+
+        available = tuple(candidates)
+        by_source = {candidate.source: candidate for candidate in available}
+        cached_source = self.cache.get(uid)
+        ordered: list[tuple[CredentialCandidate, bool]] = []
+        if cached_source in by_source:
+            ordered.append((by_source[cached_source], True))
+        ordered.extend(
+            (candidate, False)
+            for candidate in available
+            if candidate.source != cached_source
+        )
+        results: list[int | None] = []
+        with self._lock_for(uid):
+            for number, (candidate, cached) in enumerate(ordered, start=1):
+                label = f"cached_{candidate.source}" if cached else candidate.source
+                self._logger(
+                    f"camera_auth_attempt uid={uid} candidate={label} attempt={number}"
+                )
+                resource: Resource | None = None
+                try:
+                    result, resource = attempt(candidate)
+                except P2PError:
+                    self._logger(
+                        f"camera_auth_attempt uid={uid} candidate={label} "
+                        "result=transport_failure"
+                    )
+                    raise
+                explicit_rejection = (
+                    result.connected
+                    and result.login_sent
+                    and result.login_response_received
+                    and not result.authenticated
+                    and result.login_result is not None
+                    and result.login_result != 0
+                )
+                if result.authenticated:
+                    self._logger(
+                        f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
+                        f"result=success login_result={result.login_result}"
+                    )
+                    persisted = self.cache.set(uid, candidate.source)
+                    self._logger(
+                        f"camera_auth_selected uid={uid} candidate={candidate.source} "
+                        f"persisted={str(persisted).lower()}"
+                    )
+                    return candidate, result, resource  # type: ignore[return-value]
+                if resource is not None and discard is not None:
+                    discard(resource)
                 if not explicit_rejection:
                     self._logger(
                         f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "

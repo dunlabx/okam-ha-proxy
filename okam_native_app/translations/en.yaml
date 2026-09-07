@@ -8,12 +8,9 @@ configuration:
   api_token:
     name: Local API token
     description: A random secret of at least 16 characters that you create and also enter in the Home Assistant integration.
-  camera_id:
-    name: Camera alias
-    description: Local Home Assistant name for the camera, for example cabin.
-  camera_uids:
-    name: Camera UIDs
-    description: Optional exact list of camera UIDs to expose; required when the account contains multiple cameras.
+  cameras:
+    name: Cameras
+    description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias.
   api_port:
     name: API port
     description: Local HTTP API port. The default is 8099.

@@ -81,8 +81,8 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(options, dict)
     assert isinstance(schema, dict)
     assert set(options) <= set(schema)
-    assert "camera_uids" not in options
-    assert schema["camera_uids"] == ["str?"]
+    assert options["cameras"] == []
+    assert schema["cameras"] == [{"uid": "str", "alias": "str?"}]
     for key, value in schema.items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
@@ -90,8 +90,8 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
 def test_test_addon_config_matches_supervisor_schema_expectations() -> None:
     config = _load_addon_config("okam_native_app/test-addon/config.yaml")
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
-    assert "camera_uids" not in config["options"]
-    assert config["schema"]["camera_uids"] == ["str?"]
+    assert config["options"]["cameras"] == []
+    assert config["schema"]["cameras"] == [{"uid": "str", "alias": "str?"}]
     for key, value in config["schema"].items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
@@ -113,7 +113,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.2"
+    assert manifest["version"] == "1.2.3"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -180,7 +180,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.2"' in manifest
+    assert '"version": "1.2.3"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera

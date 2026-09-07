@@ -27,13 +27,14 @@ Do not use the O-KAM password as the local API token.
 
 ## Account enumeration does not find a selected camera
 
-When the account has multiple cameras, configure `camera_uids` with the exact
-UIDs to expose. The bridge does not select the first camera automatically.
+When the account has multiple cameras, the app exposes all of them unless the
+`cameras` list is configured. Each entry requires an exact UID and may contain
+its own alias.
 
 1. Sign in to the configured account in the O-KAM mobile app.
 2. Confirm that the camera is visible and live view works.
-3. Copy the UIDs shown by the account diagnostic into `camera_uids` and remove
-   whitespace or duplicates.
+3. Copy the UIDs shown by the account diagnostic into separate `cameras` entries;
+   remove whitespace, duplicate UIDs, and duplicate aliases.
 4. Save the Home Assistant app configuration and restart the app.
 
 ## Camera authentication fails

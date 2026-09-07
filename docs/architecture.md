@@ -33,7 +33,7 @@ path directly: `rtsp://HOST:8100/<camera_uid>`.
 
 ## Camera lifecycle
 
-1. Account enumeration returns all devices, then `camera_uids` selects an exact subset.
+1. Account enumeration returns all devices, then the optional `cameras` list selects an exact subset and assigns aliases.
 2. The first viewer of one selected camera acquires a stream subscription.
 3. The app requests a low-power wake and starts only that camera's native session.
 4. The entity reports `waking` until the first H.264 bytes arrive.

@@ -1,5 +1,5 @@
 name: O-KAM HA Proxy
-version: 1.2.2
+version: 1.2.3
 slug: okam_ha_proxy
 description: Self-contained native O-KAM camera bridge for Home Assistant
 url: https://github.com/dunlabx/okam-ha-proxy
@@ -20,7 +20,7 @@ options:
   account_username: null
   account_password: null
   api_token: null
-  camera_id: cabin
+  cameras: []
   api_port: 8099
   rtsp_port: 8100
   idle_timeout_seconds: 120
@@ -33,8 +33,9 @@ schema:
   account_password: password
   camera_password: password?
   api_token: password
-  camera_id: "match(^[A-Za-z0-9_-]{1,32}$)"
-  camera_uids: ["str?"]
+  cameras:
+    - uid: str
+      alias: "str?"
   api_port: "int(1,65535)"
   rtsp_port: "int(1,65535)"
   idle_timeout_seconds: "int(10,600)"

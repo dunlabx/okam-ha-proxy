@@ -7,6 +7,7 @@ import pytest
 from okam_native.account import (
     AccountDevice,
     AccountError,
+    configured_camera_selections,
     Eye4AccountClient,
     normalize_camera_uids,
     select_account_devices,
@@ -88,7 +89,51 @@ def test_camera_uid_selection_rejects_duplicates_empty_and_missing_values() -> N
         select_account_devices(devices, ["missing"])
 
 
-def test_multi_camera_accounts_require_explicit_selection() -> None:
+def test_multi_camera_accounts_without_filter_select_all() -> None:
     devices = [AccountDevice("A", "Front", "pw-a"), AccountDevice("B", "Back", "pw-b")]
-    with pytest.raises(AccountError, match="camera_uids"):
-        select_account_devices(devices)
+    assert [item.uid for item in select_account_devices(devices)] == ["A", "B"]
+
+
+def test_account_api_returns_two_parsed_cameras() -> None:
+    def opener(request, _timeout: float) -> bytes:
+        path = urlsplit(request.full_url).path
+        if path == "/user/summary":
+            return b'{"userid":123}'
+        if path == "/login/token":
+            return b'{"token":"opaque"}'
+        if path == "/PC/device/show":
+            return json.dumps(
+                [
+                    {"uid": "CAMERA_FRONT", "nickname": "Front", "password": "a"},
+                    {"uid": "CAMERA_BACK", "nickname": "Back", "password": "b"},
+                ]
+            ).encode()
+        raise AssertionError(path)
+
+    client = Eye4AccountClient(opener=opener)
+    devices = client.enumerate("user@example.com", "secret")
+    assert client.last_raw_device_count == 2
+    assert [item.uid for item in devices] == ["CAMERA_FRONT", "CAMERA_BACK"]
+
+
+def test_per_camera_aliases_and_legacy_migration() -> None:
+    devices = [AccountDevice("A", "Front", "pw-a"), AccountDevice("B", "Back", "pw-b")]
+    selected = configured_camera_selections(
+        devices,
+        {"cameras": [{"uid": "A", "alias": "Door"}, {"uid": "B"}]},
+    )
+    assert [(item.device.uid, item.alias) for item in selected] == [("A", "Door"), ("B", None)]
+    legacy = configured_camera_selections(
+        devices, {"camera_uids": ["A", "B"], "camera_id": "legacy"}
+    )
+    assert [(item.device.uid, item.alias) for item in legacy] == [("A", None), ("B", None)]
+
+
+def test_camera_configuration_rejects_duplicate_uids_and_aliases() -> None:
+    devices = [AccountDevice("A", "Front", "pw-a"), AccountDevice("B", "Back", "pw-b")]
+    with pytest.raises(AccountError, match="duplicate UIDs"):
+        configured_camera_selections(devices, {"cameras": [{"uid": "A"}, {"uid": "a"}]})
+    with pytest.raises(AccountError, match="duplicate aliases"):
+        configured_camera_selections(
+            devices, {"cameras": [{"uid": "A", "alias": "same"}, {"uid": "B", "alias": "SAME"}]}
+        )

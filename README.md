@@ -54,8 +54,8 @@ if you are unsure.
 
 Use the normal O-KAM account that can open the camera's live view. It may be
 the camera owner account or an account to which the camera was shared. For an
-account with more than one camera, select the exact UIDs in
-`camera_uids`; the bridge never picks a camera implicitly.
+account with more than one camera, all cameras are exposed by default. Use the
+explicit `cameras` list to restrict the set or assign per-camera aliases.
 
 Sign in with that account in the O-KAM mobile app once and confirm that live
 view works. Keep its email address and password available for app
@@ -80,8 +80,7 @@ configuration.
    | `account_password` | Password of the O-KAM account |
    | `camera_password` | Normally leave blank; optional camera-level password override |
    | `api_token` | A new random secret of at least 16 characters that you choose |
-   | `camera_id` | Local camera alias, for example `cabin` |
-   | `camera_uids` | Optional exact list of camera UIDs; required for a multi-camera account |
+   | `cameras` | Optional list of `{uid, alias}` mappings; empty exposes all account cameras |
    | `api_port` | HTTP API port, default `8099` |
    | `rtsp_port` | RTSP-over-TCP port, default `8100` |
    | `idle_timeout_seconds` | `120` seconds is recommended |
@@ -91,9 +90,11 @@ configuration.
    A multi-camera configuration looks like:
 
    ```yaml
-   camera_uids:
-     - CAMERA_UID_1
-     - CAMERA_UID_2
+   cameras:
+     - uid: CAMERA_UID_1
+       alias: Front Door
+     - uid: CAMERA_UID_2
+       alias: Garage
    api_port: 8099
    rtsp_port: 8100
    ```
@@ -104,7 +105,7 @@ configuration.
 
    ```text
    native_loader_ready=true
-   account_enumerated=true device_count=<selected-count>
+   account_enumerated=true raw_count=<n> parsed_count=<n> selected_count=<n>
    bridge_ready=true
    ```
 
@@ -148,7 +149,7 @@ This is not the O-KAM account password.
    | --- | --- |
    | Bridge URL | `http://HOME_ASSISTANT_LAN_IP:8099` |
    | API token | The same local token configured in the app |
-   | Camera ID | The `camera_id` configured in the app, such as `cabin` |
+   | Camera ID | The configured camera UID or its per-camera alias |
    | Idle timeout | `120` seconds is recommended |
    | Status refresh interval | `900` seconds is recommended |
 
@@ -239,7 +240,7 @@ problems.
 
 ## Security
 
-- Select only the intended camera UIDs in `camera_uids`.
+- Select only the intended camera UIDs in the `cameras` list.
 - Keep the O-KAM password and local API token private.
 - Do not expose or port-forward TCP ports 8099 or 8100 to the internet.
 - Rotate the local API token if it is accidentally disclosed.

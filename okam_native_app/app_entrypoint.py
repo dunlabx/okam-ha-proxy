@@ -17,9 +17,9 @@ from pathlib import Path
 from okam_native.account import (
     AccountDevice,
     AccountError,
+    CameraSelection,
     Eye4AccountClient,
-    normalize_camera_uids,
-    select_account_devices,
+    configured_camera_selections,
 )
 from okam_native.auth import (
     AuthenticationRejected,
@@ -38,7 +38,7 @@ from okam_native.p2p import (
     P2PError,
     diagnostic_line,
     get_service_parameter,
-    open_stream_process,
+    open_authenticated_stream_process,
     resolve_client_id,
     run_authentication_probe,
     run_connect_probe,
@@ -186,34 +186,41 @@ def load_options() -> dict[str, object]:
     return value
 
 
-def enumerate_account() -> list[AccountDevice] | None:
+def enumerate_account() -> list[CameraSelection] | None:
     options = load_options()
     username = options.get("account_username")
     password = options.get("account_password")
-    alias = options.get("camera_id") or "cabin"
     if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
         set_status(configuration_required=True)
         return None
-    if not isinstance(alias, str):
-        raise RuntimeError("camera alias is invalid")
     set_status(phase="enumerating_account", configuration_required=False)
+    client = Eye4AccountClient()
     try:
-        devices = Eye4AccountClient().enumerate(username, password)
+        devices = client.enumerate(username, password)
     finally:
         username = ""
         password = ""
-    raw_uids = options.get("camera_uids")
-    if raw_uids is None and "camera_uid" in options:
-        raw_uids = [options.get("camera_uid")]
-    camera_uids = normalize_camera_uids(raw_uids)
-    selected = select_account_devices(devices, camera_uids)
+    selected = configured_camera_selections(devices, options)
     set_status(
         account_ready=True,
+        raw_device_count=client.last_raw_device_count,
+        parsed_device_count=len(devices),
+        selected_device_count=len(selected),
         device_count=len(selected),
-        account_device_count=len(devices),
         phase="account_enumerated",
     )
-    print(f"account_enumerated=true device_count={len(selected)}", flush=True)
+    print(
+        "account_enumerated=true "
+        f"raw_count={client.last_raw_device_count} "
+        f"parsed_count={len(devices)} selected_count={len(selected)}",
+        flush=True,
+    )
+    for item in selected:
+        print(
+            f"camera_registered uid={item.device.uid} "
+            f"alias={item.alias or item.device.name}",
+            flush=True,
+        )
     return selected
 
 
@@ -230,6 +237,18 @@ def p2p_environment() -> dict[str, str]:
         }
     )
     return environment
+
+
+def _terminate_stream_process(process: subprocess.Popen[bytes]) -> None:
+    """Close a rejected candidate's native session before trying the next."""
+
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def run_p2p_acceptance(device: AccountDevice) -> None:
@@ -413,13 +432,14 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
 
 
 def configure_bridge(
-    device: AccountDevice, *, selected_count: int, legacy_single: bool
+    selection: CameraSelection, *, selected_count: int
 ) -> CameraBridge | None:
     """Prepare the long-lived, on-demand runtime without waking the camera."""
 
+    device = selection.device
     options = load_options()
     api_token = options.get("api_token")
-    alias = options.get("camera_id") or "cabin"
+    alias = selection.alias
     idle_timeout = options.get("idle_timeout_seconds", 120)
     candidates = build_candidates(
         device.device_password, options.get("camera_password")
@@ -428,8 +448,6 @@ def configure_bridge(
         set_status(configuration_required=True, camera_ready=False, phase="api_token_required")
         print("bridge_ready=false configuration_required=api_token", flush=True)
         return None
-    if not isinstance(alias, str):
-        raise RuntimeError("camera alias is invalid")
     if not isinstance(idle_timeout, int) or not 10 <= idle_timeout <= 600:
         raise RuntimeError("idle timeout is invalid")
     credentials = load_wake_credentials(VENDOR / "device_wakeup_server.dart")
@@ -449,10 +467,10 @@ def configure_bridge(
             )
         except WakeError:
             set_status(phase="starting_native_stream")
-        selected, _auth_result = AUTHENTICATOR.authenticate(
+        _selected, _auth_result, process = AUTHENTICATOR.authenticate_resource(
             device.uid,
             candidates,
-            lambda candidate: run_authentication_probe(
+            lambda candidate: open_authenticated_stream_process(
                 str(CONNECT_HELPER),
                 str(LIBRARY),
                 client_id,
@@ -461,19 +479,18 @@ def configure_bridge(
                 environment=p2p_environment(),
                 credential_index=0,
             ),
+            discard=lambda failed: _terminate_stream_process(failed),
         )
-        return open_stream_process(
-            str(CONNECT_HELPER),
-            str(LIBRARY),
-            client_id,
-            service_parameter,
-            selected.password,
-            environment=p2p_environment(),
-            credential_index=0,
+        set_status(
+            camera_authenticated=True,
+            camera_authentication=True,
+            login_result=_auth_result.login_result,
+            phase="native_stream_started",
         )
+        return process
 
     session = NativeStreamSession(start_stream, idle_timeout=float(idle_timeout))
-    camera_id = alias if legacy_single and selected_count == 1 else device.uid
+    camera_id = alias or device.uid
     bridge = CameraBridge(
         camera_id=camera_id,
         camera_uid=device.uid,
@@ -491,6 +508,24 @@ def configure_bridge(
     )
     print("bridge_ready=true", flush=True)
     return bridge
+
+
+def initialize_camera_runtimes(selections: list[CameraSelection]) -> int:
+    """Run the production per-camera setup, isolating failures by UID."""
+
+    registered = 0
+    for selection in selections:
+        try:
+            run_p2p_acceptance(selection.device)
+            if configure_bridge(selection, selected_count=len(selections)) is not None:
+                registered += 1
+        except Exception as error:
+            print(
+                f"camera_runtime_failed uid={selection.device.uid} "
+                f"error={type(error).__name__}",
+                flush=True,
+            )
+    return registered
 
 
 def main() -> int:
@@ -520,25 +555,9 @@ def main() -> int:
     signal.signal(signal.SIGINT, request_stop)
     try:
         load_vendor_runtime()
-        devices = enumerate_account()
-        if devices is not None:
-            selection = options.get("camera_uids")
-            legacy_single = selection is None and "camera_uid" not in options
-            for device in devices:
-                try:
-                    run_p2p_acceptance(device)
-                    configure_bridge(
-                        device,
-                        selected_count=len(devices),
-                        legacy_single=legacy_single,
-                    )
-                except Exception as error:
-                    # A single camera may fail to wake/authenticate while the
-                    # remaining selected cameras continue to be registered.
-                    print(
-                        f"camera_runtime_failed error={type(error).__name__}",
-                        flush=True,
-                    )
+        selections = enumerate_account()
+        if selections is not None:
+            initialize_camera_runtimes(selections)
             if not BRIDGES.values():
                 raise RuntimeError("no selected camera runtime is available")
     except Exception as error:

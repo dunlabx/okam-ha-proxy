@@ -22,7 +22,8 @@ this one leaves the installed add-on untouched.
 2. Settings, Add-ons, Add-on store, three-dot menu, Check for updates.
 3. The add-on appears under *Local add-ons*. Install it.
 4. Fill in the options. Use the **same account credentials** as the installed
-   add-on, a **different** `api_token`, and leave `camera_id` as `cabintest` so
+add-on, a **different** `api_token`, and configure a distinct per-camera alias
+in the `cameras` list so
    the entity cannot collide with the existing one.
 5. Start it and watch the log.
 
@@ -30,7 +31,7 @@ this one leaves the installed add-on untouched.
 
 ```
 native_loader_ready=true
-account_enumerated=true device_count=<selected-count>
+account_enumerated=true raw_count=<n> parsed_count=<n> selected_count=<n>
 bridge_ready=true
 ```
 

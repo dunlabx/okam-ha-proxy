@@ -6,6 +6,8 @@ import json
 import re
 import struct
 import subprocess
+import threading
+import queue
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -630,6 +632,89 @@ def open_stream_process(
         process.stdin = None
         return process
     except (OSError, subprocess.SubprocessError):
+        if "process" in locals() and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        raise P2PError("native H.264 stream helper failed") from None
+
+
+def open_authenticated_stream_process(
+    helper: str,
+    library: str,
+    uid: str,
+    service_parameter: str,
+    device_password: str,
+    *,
+    environment: dict[str, str],
+    credential_index: int = 0,
+    timeout: float = 80.0,
+) -> tuple[subprocess.Popen[bytes], AuthenticationResult]:
+    """Start a stream and wait for the helper's pre-media auth handshake."""
+
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    try:
+        command = [helper, library, "--stream-stdout", "--credential-index", str(credential_index)]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            bufsize=0,
+        )
+        assert process.stdin is not None and process.stderr is not None
+        process.stdin.write(stdin)
+        process.stdin.close()
+        process.stdin = None
+        events: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+
+        def read_events() -> None:
+            assert process.stderr is not None
+            for line in process.stderr:
+                try:
+                    payload = json.loads(line.decode("utf-8"))
+                except (UnicodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and payload.get("okam_auth") is True:
+                    try:
+                        events.put_nowait(payload)
+                    except queue.Full:
+                        pass
+                    return
+
+        threading.Thread(target=read_events, daemon=True).start()
+        try:
+            payload = events.get(timeout=timeout)
+        except queue.Empty:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+            raise P2PError("native stream helper did not report authentication") from None
+        required = ("connected", "login_sent", "login_response_received", "authenticated")
+        if any(not isinstance(payload.get(name), bool) for name in required):
+            raise P2PError("native stream helper returned an invalid authentication event")
+        result = AuthenticationResult(
+            connected=payload["connected"],
+            connect_state=payload.get("connect_state", -1),
+            login_sent=payload["login_sent"],
+            login_response_received=payload["login_response_received"],
+            authenticated=payload["authenticated"],
+            login_command=payload.get("login_command"),
+            login_result=payload.get("login_result"),
+            disconnected=False,
+            login_candidate=credential_index,
+        )
+        if not result.authenticated:
+            if process.poll() is None:
+                process.wait(timeout=10)
+            return process, result
+        return process, result
+    except P2PError:
+        if "process" in locals() and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        raise
+    except (OSError, subprocess.SubprocessError, TimeoutError):
         if "process" in locals() and process.poll() is None:
             process.kill()
             process.wait(timeout=5)

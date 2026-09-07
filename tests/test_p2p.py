@@ -13,6 +13,7 @@ from okam_native.p2p import (
     diagnostic_line,
     get_service_parameter,
     open_stream_process,
+    open_authenticated_stream_process,
     resolve_client_id,
     run_authentication_probe,
     run_connect_probe,
@@ -234,6 +235,44 @@ def test_open_stream_process_keeps_sensitive_fields_out_of_argv(monkeypatch) -> 
     assert recorded["command"] == ["/helper", "/library", "--stream-stdout"]
     assert b"sensitive-device-password" in recorded["input"]
     assert "sensitive-device-password" not in " ".join(recorded["command"])
+
+
+def test_authenticated_stream_waits_for_pre_media_auth_event(monkeypatch) -> None:
+    class Input:
+        def write(self, _value):
+            pass
+
+        def close(self):
+            pass
+
+    class ErrorPipe:
+        def __iter__(self):
+            yield b'{"okam_auth":true,"connected":true,"connect_state":3,"login_sent":true,"login_response_received":true,"authenticated":true,"login_command":24577,"login_result":0}\n'
+
+    class Process:
+        stdin = Input()
+        stdout = object()
+        stderr = ErrorPipe()
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    process, result = open_authenticated_stream_process(
+        "/helper", "/library", "UID", "service", "secret", environment={}
+    )
+    assert process is not None
+    assert result.authenticated is True
+    assert result.login_result == 0
 
 
 def _stream_payload(**overrides: object) -> dict[str, object]:

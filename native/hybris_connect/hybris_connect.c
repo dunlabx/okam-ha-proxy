@@ -413,6 +413,17 @@ int main(int argc, char **argv) {
                 login_candidate = credential_index;
             }
         }
+        if (stream_stdout) {
+            fprintf(stderr,
+                    "{\"okam_auth\":true,\"connected\":%s,\"connect_state\":%d,"
+                    "\"login_sent\":%s,\"login_response_received\":%s,"
+                    "\"authenticated\":%s,\"login_command\":%u,\"login_result\":%d}\n",
+                    connected ? "true" : "false", state,
+                    login_sent ? "true" : "false",
+                    login_response_received ? "true" : "false",
+                    authenticated ? "true" : "false", login_command, login_result);
+            fflush(stderr);
+        }
         if (connected && authenticated && live_mode) {
             stream_start_sent = client_write_cgi(
                 client, "livestream.cgi?streamid=10&substream=2&", 5000);

@@ -6,8 +6,8 @@ automatic camera wake-up, shared viewing, and automatic idle disconnect.
 
 ## Before configuring the app
 
-Use an O-KAM account that can view the cameras you want to expose. For more
-than one account camera, `camera_uids` is required and must contain exact UIDs.
+Use an O-KAM account that can view the cameras you want to expose. All account
+cameras are exposed by default; use `cameras` to restrict them or assign aliases.
 
 ## Configuration
 
@@ -17,8 +17,7 @@ than one account camera, `camera_uids` is required and must contain exact UIDs.
 | `account_password` | Password of the O-KAM account |
 | `camera_password` | Optional camera-level password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
-| `camera_id` | Home Assistant camera alias, for example `cabin` |
-| `camera_uids` | Exact list of camera UIDs; required when the account has multiple cameras |
+| `cameras` | List of mappings with required `uid` and optional per-camera `alias`; empty means all account cameras |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
@@ -46,7 +45,7 @@ default. A successful startup log contains:
 
 ```text
 native_loader_ready=true
-account_enumerated=true device_count=<selected-count>
+account_enumerated=true raw_count=<n> parsed_count=<n> selected_count=<n>
 bridge_ready=true
 ```
 

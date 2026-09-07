@@ -34,6 +34,132 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Static validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test]"
+      - run: python3 -m compileall src okam_native_app custom_components tests
+      - run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import yaml
+          for path in [Path("repository.yaml"), Path("okam_native_app/config.yaml"), Path("okam_native_app/test-addon/config.yaml")]:
+              value = yaml.safe_load(path.read_text())
+              assert isinstance(value, dict), path
+          for path in [Path("hacs.json"), Path("custom_components/okam/manifest.json")]:
+              value = json.loads(path.read_text())
+              assert isinstance(value, dict), path
+          PY
+      - run: git diff --check
+
+  unit_tests:
+    name: Unit tests
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test]"
+      - run: PYTHONPATH=src python -m pytest -vv
+
+  startup_integration_tests:
+    name: Production startup integration tests
+    needs: unit_tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test]"
+      - run: PYTHONPATH=src python -m pytest -vv tests/test_startup_integration.py
+
+  addon_validation:
+    name: Add-on schema validation
+    needs: unit_tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[test]"
+      - run: PYTHONPATH=src python -m pytest -vv tests/test_ha_app.py
+
+  hacs_validation:
+    name: HACS validation
+    needs: unit_tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  container_smoke_build:
+    name: Unreleased container smoke (${{ matrix.platform }})
+    needs: [startup_integration_tests, addon_validation, hacs_validation]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/arm64
+            arch: arm64
+            ha_arch: aarch64
+          - platform: linux/amd64
+            arch: amd64
+            ha_arch: amd64
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build unreleased smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./okam_native_app/Dockerfile
+          platforms: ${{ matrix.platform }}
+          target: final
+          outputs: type=oci,dest=/tmp/okam-${{ matrix.arch }}.tar
+          build-args: |
+            BUILD_VERSION=prebuild-${{ github.sha }}
+            BUILD_ARCH=${{ matrix.ha_arch }}
+            TARGETARCH=${{ matrix.arch }}
+      - name: Inspect container contents and startup wiring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - "/tmp/okam-${{ matrix.arch }}.tar" <<'PY'
+          import gzip, io, json, sys, tarfile
+          with tarfile.open(sys.argv[1]) as image:
+              index = json.load(image.extractfile("index.json"))
+              manifest = index["manifests"][0]["digest"].replace(":", "/")
+              descriptor = json.loads(image.extractfile(manifest).read())
+              names = set()
+              texts = []
+              for layer in descriptor["layers"]:
+                  blob_name = layer["digest"].replace(":", "/")
+                  blob = image.extractfile(blob_name).read()
+                  with tarfile.open(fileobj=gzip.GzipFile(fileobj=io.BytesIO(blob))) as layer_tar:
+                      for member in layer_tar:
+                          names.add(member.name)
+                          if member.isfile() and member.name in {"opt/okam/app_entrypoint.py", "opt/okam/okam_native/auth.py", "opt/okam/okam_native/account.py"}:
+                              texts.append(layer_tar.extractfile(member).read().decode(errors="replace"))
+          assert {"opt/okam/app_entrypoint.py", "opt/okam/okam_native/auth.py", "opt/okam/okam_native/account.py"} <= names
+          source = "\n".join(texts)
+          for marker in ("camera_auth_attempt", "configured_camera_selections", "open_authenticated_stream_process"):
+              assert marker in source, marker
+          PY
+
   prepare:
     runs-on: ubuntu-latest
     outputs:
@@ -65,7 +191,7 @@ jobs:
           fi
 
   build:
-    needs: prepare
+    needs: [prepare, container_smoke_build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

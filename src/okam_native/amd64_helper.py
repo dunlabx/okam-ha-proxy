@@ -156,6 +156,25 @@ def run(
             result["disconnected"] = session.close()
             return _finish(session, result, 0)
 
+        if mode == "stream-stdout":
+            print(
+                json.dumps(
+                    {
+                        "okam_auth": True,
+                        "connected": result["connected"],
+                        "connect_state": result["connect_state"],
+                        "login_sent": result["login_sent"],
+                        "login_response_received": result["login_response_received"],
+                        "authenticated": result["authenticated"],
+                        "login_command": result["login_command"],
+                        "login_result": result["login_result"],
+                    },
+                    separators=(",", ":"),
+                ),
+                file=sys.stderr,
+                flush=True,
+            )
+
         write_command(
             session,
             make_cgi_request(

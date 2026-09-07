@@ -29,6 +29,14 @@ class AccountDevice:
     device_password: str = field(repr=False)
 
 
+@dataclass(frozen=True)
+class CameraSelection:
+    """A selected account camera and its optional local alias."""
+
+    device: AccountDevice
+    alias: str | None = None
+
+
 def normalize_camera_uids(value: object) -> list[str] | None:
     """Normalize explicit camera selection without logging identifiers."""
 
@@ -56,23 +64,98 @@ def normalize_camera_uids(value: object) -> list[str] | None:
 def select_account_devices(
     devices: list[AccountDevice], camera_uids: list[str] | None = None
 ) -> list[AccountDevice]:
-    """Select exactly the configured cameras, preserving legacy single mode."""
+    """Select configured cameras, or all account cameras when unset."""
 
     if camera_uids is not None:
         camera_uids = normalize_camera_uids(camera_uids)
     if camera_uids is None:
-        if len(devices) == 1:
-            return [devices[0]]
-        raise AccountError("camera_uids is required when the account has multiple cameras")
+        return list(devices)
     by_uid: dict[str, AccountDevice] = {}
     for device in devices:
-        if device.uid in by_uid:
+        key = device.uid.casefold()
+        if key in by_uid:
             raise AccountError("official account returned duplicate camera UIDs")
-        by_uid[device.uid] = device
-    missing = [uid for uid in camera_uids if uid not in by_uid]
+        by_uid[key] = device
+    missing = [uid for uid in camera_uids if uid.casefold() not in by_uid]
     if missing:
         raise AccountError("one or more configured camera UIDs were not found in the account")
-    return [by_uid[uid] for uid in camera_uids]
+    return [by_uid[uid.casefold()] for uid in camera_uids]
+
+
+def normalize_camera_configurations(value: object) -> list[tuple[str, str | None]] | None:
+    """Parse the Supervisor-supported ``cameras`` list of small mappings."""
+
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise AccountError("cameras must be a list")
+    result: list[tuple[str, str | None]] = []
+    seen_uids: set[str] = set()
+    seen_aliases: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            raise AccountError("camera configuration must be a mapping")
+        uid = item.get("uid")
+        if not isinstance(uid, str) or not uid.strip():
+            raise AccountError("camera UID is required")
+        uid = uid.strip()
+        key = uid.casefold()
+        if key in seen_uids:
+            raise AccountError("cameras contains duplicate UIDs")
+        seen_uids.add(key)
+        alias = item.get("alias")
+        if alias is not None:
+            if not isinstance(alias, str):
+                raise AccountError("camera alias is invalid")
+            alias = alias.strip() or None
+            if alias is not None:
+                alias_key = alias.casefold()
+                if alias_key in seen_aliases:
+                    raise AccountError("cameras contains duplicate aliases")
+                seen_aliases.add(alias_key)
+        result.append((uid, alias))
+    return result
+
+
+def configured_camera_selections(
+    devices: list[AccountDevice], options: dict[str, object]
+) -> list[CameraSelection]:
+    """Apply current and legacy options without silently dropping cameras.
+
+    An absent or empty ``cameras`` list explicitly means auto-select every
+    account camera. Legacy UID options are converted in memory so existing
+    installations continue to work while the Supervisor UI shows ``cameras``.
+    """
+
+    current = normalize_camera_configurations(options.get("cameras"))
+    if current is None:
+        raw_uids = options.get("camera_uids")
+        if raw_uids is None and "camera_uid" in options:
+            raw_uids = [options.get("camera_uid")]
+        legacy_uids = normalize_camera_uids(raw_uids)
+        if legacy_uids is not None:
+            legacy_alias = options.get("camera_id")
+            alias = legacy_alias.strip() if isinstance(legacy_alias, str) else None
+            current = [
+                (uid, alias if len(legacy_uids) == 1 else None)
+                for uid in legacy_uids
+            ]
+    if not current:
+        return [CameraSelection(device) for device in devices]
+
+    by_uid: dict[str, AccountDevice] = {}
+    for device in devices:
+        key = device.uid.casefold()
+        if key in by_uid:
+            raise AccountError("official account returned duplicate camera UIDs")
+        by_uid[key] = device
+    selected: list[CameraSelection] = []
+    for uid, alias in current:
+        device = by_uid.get(uid.casefold())
+        if device is None:
+            raise AccountError("one or more configured camera UIDs were not found in the account")
+        selected.append(CameraSelection(device, alias))
+    return selected
 
 
 OpenRequest = Callable[[urllib.request.Request, float], bytes]
@@ -93,6 +176,7 @@ class Eye4AccountClient:
 
     def __init__(self, *, opener: OpenRequest = _open_request) -> None:
         self._opener = opener
+        self.last_raw_device_count = 0
 
     def _request_json(
         self,
@@ -162,6 +246,7 @@ class Eye4AccountClient:
         )
         if not isinstance(devices, list):
             raise AccountError("official account device list was invalid")
+        self.last_raw_device_count = len(devices)
         result: list[AccountDevice] = []
         for item in devices:
             if not isinstance(item, dict):

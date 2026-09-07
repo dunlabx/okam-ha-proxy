@@ -19,7 +19,7 @@ options:
   account_username: null
   account_password: null
   api_token: null
-  camera_id: cabintest
+  cameras: []
   api_port: 8099
   rtsp_port: 8100
   idle_timeout_seconds: 120
@@ -32,8 +32,9 @@ schema:
   account_password: password
   camera_password: password?
   api_token: password
-  camera_id: "match(^[A-Za-z0-9_-]{1,32}$)"
-  camera_uids: ["str?"]
+  cameras:
+    - uid: str
+      alias: "str?"
   api_port: "int(1,65535)"
   rtsp_port: "int(1,65535)"
   idle_timeout_seconds: "int(10,600)"

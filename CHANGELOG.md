@@ -2,12 +2,19 @@
 
 ## Next
 
-- Adds explicit `camera_uids` selection for arbitrary subsets of an O-KAM account.
+- Adds explicit per-camera UID and alias mappings while selecting all account cameras by default.
 - Runs independent on-demand camera sessions behind one shared registry.
 - Adds configurable API and RTSP ports and a standard H.264 RTSP-over-TCP server
   at `rtsp://HOST:8100/<camera_uid>` without transcoding.
 - Keeps HTTP/HA viewers and RTSP consumers on the same per-camera fan-out and
   idle lifecycle.
+
+## 1.2.3
+
+- Uses an explicit per-camera UID and alias configuration and exposes all
+  enumerated cameras when the list is empty.
+- Runs bounded authentication fallback in the same native stream session and
+  records only symbolic credential sources in the cache.
 
 ## 1.2.2
 
