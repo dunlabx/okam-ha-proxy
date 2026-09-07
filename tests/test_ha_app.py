@@ -57,7 +57,7 @@ def test_fork_repository_and_addon_identity_are_local() -> None:
     assert config["name"] == "O-KAM HA Proxy"
     assert config["slug"] == "okam_ha_proxy"
     assert config["url"] == "https://github.com/dunlabx/okam-ha-proxy"
-    assert "image" not in config
+    assert config["image"] == "ghcr.io/dunlabx/okam-ha-proxy"
 
 
 def test_addon_config_matches_supervisor_schema_expectations() -> None:
@@ -73,7 +73,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert config["boot"] == "auto"
     assert config["ports"] == {"8099/tcp": 8099, "8100/tcp": 8100}
     assert set(config["ports_description"]) == set(config["ports"])
-    assert "image" not in config  # Supervisor builds the Dockerfile locally.
+    assert config["image"] == "ghcr.io/dunlabx/okam-ha-proxy"
 
     options = config["options"]
     schema = config["schema"]
