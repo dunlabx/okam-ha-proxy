@@ -46,7 +46,11 @@ class OkamCoordinator(DataUpdateCoordinator[dict]):
         # Keep camera_id as the stable UID used by the bridge API. Existing
         # callers and entity object IDs continue to use this attribute.
         self.camera_id = self.camera_uid
-        self.camera_name = str(entry.data.get("camera_name", self.camera_uid))
+        self.camera_name = str(
+            entry.data.get(
+                "camera_name", entry.data.get("camera_alias", self.camera_uid)
+            )
+        )
 
     async def _async_update_data(self) -> dict:
         try:

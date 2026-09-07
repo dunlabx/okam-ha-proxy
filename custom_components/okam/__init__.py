@@ -66,14 +66,37 @@ async def _resolve_camera_uid(
 
     def uid(item: dict) -> str:
         value = item.get("camera_uid") or item.get("camera_id")
-        return str(value) if isinstance(value, str) else ""
+        return value.strip() if isinstance(value, str) else ""
 
     selected = None
     if isinstance(configured_uid, str) and configured_uid:
-        selected = next((item for item in devices if uid(item) == configured_uid), None)
-    if selected is None and isinstance(legacy_id, str) and legacy_id:
-        selected = next((item for item in devices if item.get("camera_id") == legacy_id), None)
-    if selected is None and not configured_uid and len(devices) == 1:
+        matches = [
+            item
+            for item in devices
+            if uid(item).casefold() == configured_uid.strip().casefold()
+        ]
+        if len(matches) > 1:
+            raise ConfigEntryNotReady(
+                "The bridge returned duplicate camera UIDs; reconfigure this entry"
+            )
+        selected = matches[0] if matches else None
+        if selected is None:
+            raise ConfigEntryNotReady(
+                "The configured camera UID is no longer available; reconfigure this entry"
+            )
+    elif isinstance(legacy_id, str) and legacy_id:
+        matches = [
+            item
+            for item in devices
+            if isinstance(item.get("camera_id"), str)
+            and item["camera_id"].strip().casefold() == legacy_id.strip().casefold()
+        ]
+        if len(matches) > 1:
+            raise ConfigEntryNotReady(
+                "The legacy camera ID matches multiple cameras; reconfigure this entry"
+            )
+        selected = matches[0] if matches else None
+    if selected is None and len(devices) == 1:
         selected = devices[0]
     if selected is None:
         raise ConfigEntryNotReady(
@@ -83,11 +106,18 @@ async def _resolve_camera_uid(
     if not selected_uid:
         raise ConfigEntryNotReady("The bridge returned an invalid camera identity")
     selected_name = selected.get("name")
-    if selected_uid != configured_uid or selected_name:
+    selected_alias = selected.get("alias")
+    if (
+        selected_uid.casefold() != str(configured_uid or "").strip().casefold()
+        or selected_name
+        or selected_alias
+    ):
         data = dict(entry.data)
         data[CONF_CAMERA_UID] = selected_uid
         if isinstance(selected_name, str) and selected_name:
             data["camera_name"] = selected_name
+        if isinstance(selected_alias, str) and selected_alias:
+            data["camera_alias"] = selected_alias
         hass.config_entries.async_update_entry(entry, data=data)
     return selected_uid
 

@@ -1,5 +1,6 @@
-from pathlib import Path
+import json
 import re
+from pathlib import Path
 
 import yaml
 
@@ -95,6 +96,36 @@ def test_test_addon_config_matches_supervisor_schema_expectations() -> None:
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
 
+def test_hacs_repository_layout_and_manifest_are_installable() -> None:
+    hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (ROOT / "custom_components" / "okam" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert isinstance(hacs.get("name"), str) and hacs["name"]
+    assert set(manifest) >= {
+        "domain",
+        "documentation",
+        "issue_tracker",
+        "codeowners",
+        "name",
+        "version",
+    }
+    assert manifest["domain"] == "okam"
+    assert manifest["version"] == "1.2.1"
+    assert manifest["documentation"].startswith("https://github.com/dunlabx/")
+    assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
+    integration_dirs = sorted(
+        path.name
+        for path in (ROOT / "custom_components").iterdir()
+        if path.is_dir() and path.name != "__pycache__"
+    )
+    assert integration_dirs == ["okam"]
+    icon = ROOT / "brand" / "icon.png"
+    assert icon.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
 def test_native_image_excludes_windows_gui_runtime() -> None:
     dockerfile = (ROOT / "okam_native_app" / "Dockerfile").read_text(encoding="utf-8")
     for forbidden in ("wine", "box64", "webviewer", "xvfb", "libgtk"):
@@ -169,6 +200,10 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     assert "async_step_reconfigure_camera" in config_flow
     assert "CameraSelectionRequired" in config_flow
     assert "f\"{bridge_url}:{camera_uid}\"" in config_flow
+    assert "_camera_label(item, uid)" in config_flow
+    assert 'for key in ("alias", "name", "camera_id")' in config_flow
+    assert "The configured camera UID is no longer available" in integration_init
+    assert "uid(item).casefold() == configured_uid.strip().casefold()" in integration_init
     assert "multiple cameras; reconfigure this entry" in integration_init
     assert "/api/cameras/{camera_uid}/status" in (ROOT / "custom_components" / "okam" / "api.py").read_text(encoding="utf-8")
 

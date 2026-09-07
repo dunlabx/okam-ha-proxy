@@ -67,11 +67,13 @@ def _camera_selector(devices: list[dict[str, Any]]) -> vol.Schema:
     options = [
         {
             "value": uid,
-            "label": str(item.get("name") or item.get("camera_id") or uid),
+            "label": _camera_label(item, uid),
         }
         for item in devices
         if (uid := _camera_uid(item))
     ]
+    if not options:
+        raise ValueError("camera_not_found")
     return vol.Schema(
         {
             vol.Required(CONF_CAMERA_UID): selector.SelectSelector(
@@ -79,6 +81,32 @@ def _camera_selector(devices: list[dict[str, Any]]) -> vol.Schema:
             )
         }
     )
+
+
+def _camera_label(item: dict[str, Any], uid: str) -> str:
+    """Build a readable selector label while keeping UID as the value."""
+    names: list[str] = []
+    for key in ("alias", "name", "camera_id"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            value = value.strip()
+            if value.casefold() != uid.casefold() and all(
+                value.casefold() != name.casefold() for name in names
+            ):
+                names.append(value)
+    return f"{' / '.join(names) if names else 'O-KAM camera'} — {uid}"
+
+
+def _matching_devices(
+    devices: list[dict[str, Any]], key: str, value: str
+) -> list[dict[str, Any]]:
+    """Return all matches so legacy aliases cannot select silently."""
+    return [
+        item
+        for item in devices
+        if isinstance(item.get(key), str)
+        and item[key].strip().casefold() == value.strip().casefold()
+    ]
 
 
 async def _validate(hass, data: dict[str, Any]) -> dict[str, Any]:
@@ -93,9 +121,21 @@ async def _validate(hass, data: dict[str, Any]) -> dict[str, Any]:
     requested_id = data.get(CONF_CAMERA_ID)
     selected = None
     if isinstance(requested_uid, str) and requested_uid:
-        selected = next((item for item in devices if _camera_uid(item) == requested_uid), None)
-    if selected is None and isinstance(requested_id, str) and requested_id:
-        selected = next((item for item in devices if item.get("camera_id") == requested_id), None)
+        matches = [
+            item
+            for item in devices
+            if _camera_uid(item).casefold() == requested_uid.strip().casefold()
+        ]
+        if len(matches) > 1:
+            raise CameraSelectionRequired(devices)
+        selected = matches[0] if matches else None
+        if selected is None:
+            raise CameraSelectionRequired(devices)
+    elif isinstance(requested_id, str) and requested_id:
+        matches = _matching_devices(devices, "camera_id", requested_id)
+        if len(matches) > 1:
+            raise CameraSelectionRequired(devices)
+        selected = matches[0] if matches else None
     if selected is None and len(devices) == 1:
         selected = devices[0]
     if selected is None:
@@ -109,6 +149,9 @@ async def _validate(hass, data: dict[str, Any]) -> dict[str, Any]:
     name = selected.get("name")
     if isinstance(name, str) and name:
         result["camera_name"] = name
+    alias = selected.get("alias")
+    if isinstance(alias, str) and alias:
+        result["camera_alias"] = alias
     return result
 
 
