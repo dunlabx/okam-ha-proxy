@@ -201,22 +201,22 @@ class ScriptedSession:
 def test_each_login_candidate_gets_its_own_read_window() -> None:
     # A silent first candidate must not consume the window of the candidates
     # behind it: previously they shared one deadline and starved.
-    session = ScriptedSession([None, None, (0x6001, b"result=0")])
+    session = ScriptedSession([None, (0x6001, b"result=0")])
 
     login = authenticate_camera(session, "device-secret")  # type: ignore[arg-type]
 
-    assert login.candidate == 2
-    assert login.attempts == (None, None, 0)
-    assert len(session.writes) == 3
+    assert login.candidate == 1
+    assert login.attempts == (None, 0)
+    assert len(session.writes) == 2
 
 
 def test_login_distinguishes_rejection_from_silence() -> None:
-    session = ScriptedSession([(0x6001, b"result=-1"), None, (0x6001, b"result=-1")])
+    session = ScriptedSession([(0x6001, b"result=-1"), (0x6001, b"result=-1")])
 
     with pytest.raises(CameraLoginRejected) as caught:
         authenticate_camera(session, "device-secret")  # type: ignore[arg-type]
 
-    assert caught.value.attempts == (-1, None, -1)
+    assert caught.value.attempts == (-1, -1)
     assert "device-secret" not in str(caught.value)
 
 
@@ -423,7 +423,7 @@ def test_amd64_helper_authentication_contract(monkeypatch) -> None:
     monkeypatch.setattr(
         amd64_helper,
         "authenticate_camera",
-        lambda _session, _password: CameraLogin("admin", "", 0, 2, (-1, -1, 0)),
+        lambda _session, _password: CameraLogin("admin", "", 0, 1, (-1, 0)),
     )
 
     code, result = amd64_helper.run(
@@ -434,8 +434,8 @@ def test_amd64_helper_authentication_contract(monkeypatch) -> None:
     assert result["authenticated"] is True
     assert result["login_command"] == 0x6001
     assert result["login_result"] == 0
-    assert result["login_candidate"] == 2
-    assert result["login_attempts"] == [-1, -1, 0]
+    assert result["login_candidate"] == 1
+    assert result["login_attempts"] == [-1, 0]
     assert "device-secret" not in repr(result)
 
 

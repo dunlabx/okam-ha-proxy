@@ -113,7 +113,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.1"
+    assert manifest["version"] == "1.2.2"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -154,7 +154,9 @@ def test_status_distinguishes_loader_from_camera_acceptance() -> None:
     assert 'RUNTIME_ARCH == "aarch64"' in entrypoint
     assert "/opt/okam/okam-amd64-connect" in entrypoint
     assert 'command.append("--wake-only")' in entrypoint
-    assert "select_camera_password" in entrypoint
+    assert "build_candidates" in entrypoint
+    assert "camera_auth_cache.json" in entrypoint
+    assert "CameraAuthenticator" in entrypoint
     assert "camera device credential was unavailable" not in entrypoint
 
 
@@ -178,7 +180,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.1"' in manifest
+    assert '"version": "1.2.2"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera

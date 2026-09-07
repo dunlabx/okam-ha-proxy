@@ -304,13 +304,17 @@ def run_authentication_probe(
     *,
     environment: dict[str, str],
     timeout: float = 75.0,
+    credential_index: int | None = None,
 ) -> AuthenticationResult:
     """Connect and prove camera-level login without placing secrets in argv."""
 
     stdin = _field(uid) + _field(service_parameter) + _field(device_password)
     try:
+        command = [helper, library, "--authenticate"]
+        if credential_index is not None:
+            command.extend(("--credential-index", str(credential_index)))
         completed = subprocess.run(
-            [helper, library, "--authenticate"],
+            command,
             input=stdin,
             capture_output=True,
             timeout=timeout,
@@ -364,13 +368,17 @@ def run_stream_probe(
     *,
     environment: dict[str, str],
     timeout: float = 125.0,
+    credential_index: int | None = None,
 ) -> StreamProbeResult:
     """Prove bounded H.264 receipt without persisting or returning frame bytes."""
 
     stdin = _field(uid) + _field(service_parameter) + _field(device_password)
     try:
+        command = [helper, library, "--stream-test"]
+        if credential_index is not None:
+            command.extend(("--credential-index", str(credential_index)))
         completed = subprocess.run(
-            [helper, library, "--stream-test"],
+            command,
             input=stdin,
             capture_output=True,
             timeout=timeout,
@@ -478,6 +486,7 @@ def run_snapshot_probe(
     *,
     environment: dict[str, str],
     timeout: float = 125.0,
+    credential_index: int | None = None,
 ) -> SnapshotProbeResult:
     """Decode one native H.264 frame to an in-memory JPEG and disconnect."""
 
@@ -485,8 +494,11 @@ def run_snapshot_probe(
     helper_process: subprocess.Popen[bytes] | None = None
     decoder_process: subprocess.Popen[bytes] | None = None
     try:
+        command = [helper, library, "--stream-stdout"]
+        if credential_index is not None:
+            command.extend(("--credential-index", str(credential_index)))
         helper_process = subprocess.Popen(
-            [helper, library, "--stream-stdout"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -593,13 +605,17 @@ def open_stream_process(
     device_password: str,
     *,
     environment: dict[str, str],
+    credential_index: int | None = None,
 ) -> subprocess.Popen[bytes]:
     """Start the graceful raw-H.264 helper with all sensitive input on stdin."""
 
     stdin = _field(uid) + _field(service_parameter) + _field(device_password)
     try:
+        command = [helper, library, "--stream-stdout"]
+        if credential_index is not None:
+            command.extend(("--credential-index", str(credential_index)))
         process = subprocess.Popen(
-            [helper, library, "--stream-stdout"],
+            command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

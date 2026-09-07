@@ -9,6 +9,12 @@
 - Keeps HTTP/HA viewers and RTSP consumers on the same per-camera fan-out and
   idle lifecycle.
 
+## 1.2.2
+
+- Tries only known per-camera login credentials with bounded native
+  authentication cycles and remembers the successful credential source in
+  `/data` without persisting passwords.
+
 ## 1.2.1
 
 - Shows the release notes in the app update dialog. The supervisor reads a

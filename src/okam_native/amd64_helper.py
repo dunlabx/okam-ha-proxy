@@ -120,11 +120,26 @@ def run(
             return _finish(session, result, 0)
         assert device_password is not None
         if credential_index is not None:
-            candidates = login_candidates(device_password)
-            if not 0 <= credential_index < len(candidates):
+            if credential_index < 0:
                 raise CS2Error("credential candidate is out of range")
-            accepted_user, accepted_password = candidates[credential_index]
             result["login_candidate"] = credential_index
+            result["login_sent"] = True
+            write_command(
+                session,
+                make_cgi_request(
+                    "get_status.cgi?name=admin&", accepted_user, accepted_password
+                ),
+            )
+            answer = read_command_result(
+                session, (LOGIN_RESPONSE_COMMAND,), timeout=45.0
+            )
+            if answer is not None:
+                result.update(
+                    login_response_received=True,
+                    authenticated=answer[1] == 0,
+                    login_command=answer[0],
+                    login_result=answer[1],
+                )
         else:
             result["login_sent"] = True
             login = authenticate_camera(session, device_password)
@@ -226,27 +241,39 @@ def run(
 
 
 def main() -> int:
-    if len(sys.argv) not in (2, 3):
+    args = sys.argv[2:]
+    if not args or len(args) not in (1, 3):
         print(
             "usage: okam-amd64-connect ignored-library "
-            "[--authenticate|--stream-test|--stream-stdout]",
+            "[--authenticate|--stream-test|--stream-stdout] "
+            "[--credential-index N]",
             file=sys.stderr,
         )
         return 2
-    option = sys.argv[2] if len(sys.argv) == 3 else ""
+    option = args[0]
     modes = {
         "": "connect",
         "--authenticate": "authenticate",
         "--stream-test": "stream-test",
         "--stream-stdout": "stream-stdout",
     }
-    if option not in modes:
+    if option not in modes or (len(args) == 3 and args[1] != "--credential-index"):
         return 2
+    credential_index = None
+    if len(args) == 3:
+        try:
+            credential_index = int(args[2])
+        except ValueError:
+            return 2
+        if credential_index < 0:
+            return 2
     try:
         uid = _read_field()
         service = _read_field()
         password = _read_field() if modes[option] != "connect" else None
-        code, result = run(modes[option], uid, service, password)
+        code, result = run(
+            modes[option], uid, service, password, credential_index=credential_index
+        )
     except CS2Error:
         return 3
     output = json.dumps(result, separators=(",", ":"), sort_keys=True)

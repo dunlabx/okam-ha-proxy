@@ -292,14 +292,30 @@ static bool forward_h264_frames(client_read_fn client_read, void *client,
 }
 
 int main(int argc, char **argv) {
-    bool stream_test = argc == 3 && strcmp(argv[2], "--stream-test") == 0;
-    bool stream_stdout = argc == 3 && strcmp(argv[2], "--stream-stdout") == 0;
+    const char *mode = argc >= 3 ? argv[2] : "";
+    int credential_index = -1;
+    if (argc == 5 && strcmp(argv[3], "--credential-index") == 0) {
+        char *end = NULL;
+        long parsed = strtol(argv[4], &end, 10);
+        if (end == argv[4] || *end != '\0' || parsed < 0 || parsed > 255) {
+            return 2;
+        }
+        credential_index = (int)parsed;
+    } else if (argc != 2 && argc != 3) {
+        return 2;
+    }
+    bool stream_test = strcmp(mode, "--stream-test") == 0;
+    bool stream_stdout = strcmp(mode, "--stream-stdout") == 0;
     bool live_mode = stream_test || stream_stdout;
     bool authenticate = live_mode ||
-        (argc == 3 && strcmp(argv[2], "--authenticate") == 0);
-    if (argc != 2 && !authenticate) {
+        (strcmp(mode, "--authenticate") == 0);
+    if (credential_index >= 0 && !authenticate) {
+        return 2;
+    }
+    if ((argc != 2 && argc != 3 && argc != 5) || (!authenticate && argc != 2)) {
         fputs("usage: okam-hybris-connect /path/to/libOKSMARTPPCS.so "
-              "[--authenticate|--stream-test|--stream-stdout]\n", stderr);
+              "[--authenticate|--stream-test|--stream-stdout] "
+              "[--credential-index N]\n", stderr);
         return 2;
     }
     char *uid = read_field();
@@ -376,7 +392,8 @@ int main(int argc, char **argv) {
     bool login_response_received = false;
     bool authenticated = false;
     uint16_t login_command = 0;
-    int login_result = 0;
+    int login_result = -1;
+    int login_candidate = -1;
     bool stream_start_sent = false;
     bool stream_stop_sent = false;
     bool h264_received = false;
@@ -393,6 +410,7 @@ int main(int argc, char **argv) {
                 login_response_received = await_login_response(
                     client_read, client, &login_command, &login_result);
                 authenticated = login_response_received && login_result == 0;
+                login_candidate = credential_index;
             }
         }
         if (connected && authenticated && live_mode) {
@@ -429,12 +447,14 @@ int main(int argc, char **argv) {
                 "{\"connected\":%s,\"connect_state\":%d,\"login_sent\":%s,"
                 "\"login_response_received\":%s,\"authenticated\":%s,"
                 "\"login_command\":%u,\"login_result\":%d,"
+                "\"login_candidate\":%d,"
                 "\"stream_start_sent\":%s,\"stream_stop_sent\":%s,"
                 "\"h264_received\":%s,\"h264_frames\":%u,\"h264_bytes\":%llu,"
                 "\"keyframe_seen\":%s,\"h265_frames\":%u,\"disconnected\":%s}\n",
                 connected ? "true" : "false", state, login_sent ? "true" : "false",
                 login_response_received ? "true" : "false",
                 authenticated ? "true" : "false", login_command, login_result,
+                login_candidate,
                 stream_start_sent ? "true" : "false", stream_stop_sent ? "true" : "false",
                 h264_received ? "true" : "false", h264_frames, h264_bytes,
                 keyframe_seen ? "true" : "false", h265_frames,
@@ -443,12 +463,14 @@ int main(int argc, char **argv) {
         printf("{\"connected\":%s,\"connect_state\":%d,\"login_sent\":%s,"
                "\"login_response_received\":%s,\"authenticated\":%s,"
                "\"login_command\":%u,\"login_result\":%d,"
+               "\"login_candidate\":%d,"
                "\"stream_start_sent\":%s,\"stream_stop_sent\":%s,"
                "\"h264_received\":%s,\"h264_frames\":%u,\"h264_bytes\":%llu,"
                "\"keyframe_seen\":%s,\"h265_frames\":%u,\"disconnected\":%s}\n",
                connected ? "true" : "false", state, login_sent ? "true" : "false",
                login_response_received ? "true" : "false",
                authenticated ? "true" : "false", login_command, login_result,
+               login_candidate,
                stream_start_sent ? "true" : "false", stream_stop_sent ? "true" : "false",
                h264_received ? "true" : "false", h264_frames, h264_bytes,
                keyframe_seen ? "true" : "false", h265_frames,
@@ -456,15 +478,18 @@ int main(int argc, char **argv) {
     } else if (authenticate && login_response_received) {
         printf("{\"connected\":%s,\"connect_state\":%d,\"login_sent\":%s,"
                "\"login_response_received\":true,\"authenticated\":%s,"
-               "\"login_command\":%u,\"login_result\":%d,\"disconnected\":%s}\n",
+               "\"login_command\":%u,\"login_result\":%d,\"login_candidate\":%d,\"disconnected\":%s}\n",
                connected ? "true" : "false", state, login_sent ? "true" : "false",
                authenticated ? "true" : "false", login_command, login_result,
+               login_candidate,
                disconnected ? "true" : "false");
     } else if (authenticate) {
         printf("{\"connected\":%s,\"connect_state\":%d,\"login_sent\":%s,"
                "\"login_response_received\":false,\"authenticated\":false,"
-               "\"login_command\":null,\"login_result\":null,\"disconnected\":%s}\n",
+               "\"login_command\":null,\"login_result\":null,"
+               "\"login_candidate\":%d,\"disconnected\":%s}\n",
                connected ? "true" : "false", state, login_sent ? "true" : "false",
+               login_candidate,
                disconnected ? "true" : "false");
     } else {
         printf("{\"connected\":%s,\"connect_state\":%d,\"disconnected\":%s}\n",

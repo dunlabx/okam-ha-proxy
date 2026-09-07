@@ -785,14 +785,12 @@ def parse_result(payload: bytes) -> int | None:
 def login_candidates(device_password: str) -> list[tuple[str, str]]:
     """Ordered credential candidates.
 
-    Candidate 0 is the enumerated camera credential, 1 the common initial
-    value, 2 the empty value. Only the index is ever reported, so a login
-    summary cannot disclose which secret the camera accepted.
+    Candidate 0 is the enumerated camera credential and candidate 1 is the
+    common initial value. Only the index is ever reported, so a login summary
+    cannot disclose which secret the camera accepted.
     """
 
-    return list(
-        dict.fromkeys((("admin", device_password), ("admin", "888888"), ("admin", "")))
-    )
+    return list(dict.fromkeys((("admin", device_password), ("admin", "888888"))))
 
 
 @dataclass(frozen=True)

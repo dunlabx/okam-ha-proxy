@@ -21,6 +21,13 @@ from okam_native.account import (
     normalize_camera_uids,
     select_account_devices,
 )
+from okam_native.auth import (
+    AuthenticationRejected,
+    AuthenticationTransportError,
+    CameraAuthenticator,
+    CredentialSourceCache,
+    build_candidates,
+)
 from okam_native.bridge import (
     BridgeRegistry,
     CameraBridge,
@@ -37,7 +44,6 @@ from okam_native.p2p import (
     run_connect_probe,
     run_snapshot_probe,
     run_stream_probe,
-    select_camera_password,
 )
 from okam_native.session import NativeStreamSession
 from okam_native.wakeup import WakeError, load_wake_credentials, wake_camera
@@ -77,6 +83,9 @@ STATUS: dict[str, object] = {
 }
 LOCK = threading.Lock()
 BRIDGES = BridgeRegistry()
+AUTHENTICATOR = CameraAuthenticator(
+    CredentialSourceCache(DATA / "camera_auth_cache.json")
+)
 
 
 def set_status(**values: object) -> None:
@@ -239,8 +248,10 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
     )
     if not enabled and not auth_enabled and not stream_enabled:
         return
-    camera_password = select_camera_password(
-        device.device_password, options.get("camera_password")
+    candidates = (
+        build_candidates(device.device_password, options.get("camera_password"))
+        if auth_enabled
+        else ()
     )
     credentials = load_wake_credentials(VENDOR / "device_wakeup_server.dart")
     if credentials is None:
@@ -263,42 +274,51 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
             wake_responsive_servers=responsive_servers,
             phase="connecting_p2p",
         )
-        if snapshot_enabled:
-            result = run_snapshot_probe(
-                str(CONNECT_HELPER),
-                str(LIBRARY),
-                str(FFMPEG),
-                client_id,
-                service_parameter,
-                camera_password,
-                environment=p2p_environment(),
-            )
-        elif stream_enabled:
-            result = run_stream_probe(
-                str(CONNECT_HELPER),
-                str(LIBRARY),
-                client_id,
-                service_parameter,
-                camera_password,
-                environment=p2p_environment(),
-            )
-        elif auth_enabled:
-            result = run_authentication_probe(
-                str(CONNECT_HELPER),
-                str(LIBRARY),
-                client_id,
-                service_parameter,
-                camera_password,
-                environment=p2p_environment(),
-            )
-        else:
-            result = run_connect_probe(
-                str(CONNECT_HELPER),
-                str(LIBRARY),
-                client_id,
-                service_parameter,
-                environment=p2p_environment(),
-            )
+        try:
+            if auth_enabled:
+                def attempt_candidate(candidate):
+                    if snapshot_enabled:
+                        return run_snapshot_probe(
+                            str(CONNECT_HELPER), str(LIBRARY), str(FFMPEG),
+                            client_id, service_parameter, candidate.password,
+                            environment=p2p_environment(), credential_index=0,
+                        )
+                    if stream_enabled:
+                        return run_stream_probe(
+                            str(CONNECT_HELPER), str(LIBRARY), client_id,
+                            service_parameter, candidate.password,
+                            environment=p2p_environment(), credential_index=0,
+                        )
+                    return run_authentication_probe(
+                        str(CONNECT_HELPER), str(LIBRARY), client_id,
+                        service_parameter, candidate.password,
+                        environment=p2p_environment(), credential_index=0,
+                    )
+
+                _selected, result = AUTHENTICATOR.authenticate(
+                    device.uid, candidates, attempt_candidate
+                )
+            else:
+                result = run_connect_probe(
+                    str(CONNECT_HELPER),
+                    str(LIBRARY),
+                    client_id,
+                    service_parameter,
+                    environment=p2p_environment(),
+                )
+        except AuthenticationRejected:
+            set_status(phase="camera_authentication_rejected", connect_attempt=attempt)
+            raise
+        except AuthenticationTransportError:
+            if attempt < 3:
+                time.sleep(5)
+                continue
+            raise
+        except P2PError:
+            if attempt < 3:
+                time.sleep(5)
+                continue
+            raise
         last_state = result.connect_state
         if auth_enabled:
             set_status(
@@ -401,7 +421,7 @@ def configure_bridge(
     api_token = options.get("api_token")
     alias = options.get("camera_id") or "cabin"
     idle_timeout = options.get("idle_timeout_seconds", 120)
-    camera_password = select_camera_password(
+    candidates = build_candidates(
         device.device_password, options.get("camera_password")
     )
     if not isinstance(api_token, str) or not 16 <= len(api_token) <= 1024:
@@ -429,13 +449,27 @@ def configure_bridge(
             )
         except WakeError:
             set_status(phase="starting_native_stream")
+        selected, _auth_result = AUTHENTICATOR.authenticate(
+            device.uid,
+            candidates,
+            lambda candidate: run_authentication_probe(
+                str(CONNECT_HELPER),
+                str(LIBRARY),
+                client_id,
+                service_parameter,
+                candidate.password,
+                environment=p2p_environment(),
+                credential_index=0,
+            ),
+        )
         return open_stream_process(
             str(CONNECT_HELPER),
             str(LIBRARY),
             client_id,
             service_parameter,
-            camera_password,
+            selected.password,
             environment=p2p_environment(),
+            credential_index=0,
         )
 
     session = NativeStreamSession(start_stream, idle_timeout=float(idle_timeout))
