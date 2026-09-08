@@ -141,11 +141,14 @@ jobs:
           python3 - "/tmp/okam-${{ matrix.arch }}.tar" <<'PY'
           import gzip, io, json, sys, tarfile
           with tarfile.open(sys.argv[1]) as image:
-              index = json.load(image.extractfile("index.json"))
               descriptor = None
-              for candidate in index["manifests"]:
-                  manifest = "blobs/" + candidate["digest"].replace(":", "/")
-                  value = json.loads(image.extractfile(manifest).read())
+              for member in image.getmembers():
+                  if not member.name.startswith("blobs/"):
+                      continue
+                  try:
+                      value = json.loads(image.extractfile(member).read())
+                  except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+                      continue
                   if "layers" in value:
                       descriptor = value
                       break
