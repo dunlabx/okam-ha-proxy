@@ -14,7 +14,7 @@ dependencies = []
 [project.optional-dependencies]
 trace = ["frida>=17,<18"]
 inspect = ["pyelftools>=0.31,<1"]
-test = ["pytest>=8,<9", "pyelftools>=0.31,<1", "PyYAML>=6,<7"]
+test = ["pytest>=8,<9", "pyelftools>=0.31,<1", "PyYAML>=6,<7", "aiohttp>=3.9,<4"]
 
 [project.scripts]
 okam-acceptance = "okam_native.acceptance:main"
