@@ -239,13 +239,28 @@ def test_stale_global_camera_password_is_ignored(entrypoint):
     assert strict is False
 
 
-def test_production_startup_isolates_one_camera_failure(entrypoint, monkeypatch):
+def test_production_startup_never_runs_camera_diagnostics(entrypoint, monkeypatch):
     app, options, _logs = entrypoint
     options["run_auth_test"] = True
     selections = [
         type("Selection", (), {"device": AccountDevice("A", "A", "pw"), "alias": None})(),
         type("Selection", (), {"device": AccountDevice("B", "B", "pw"), "alias": None})(),
     ]
-    monkeypatch.setattr(app, "run_p2p_acceptance", lambda selection: (_ for _ in ()).throw(RuntimeError()) if selection.device.uid == "A" else None)
-    assert app.initialize_camera_runtimes(selections) == 1
-    assert [bridge.camera_uid for bridge in app.BRIDGES.values()] == ["B"]
+    diagnostic_calls = []
+    monkeypatch.setattr(app, "run_p2p_acceptance", lambda selection: diagnostic_calls.append(selection.device.uid))
+    assert app.initialize_camera_runtimes(selections) == 2
+    assert diagnostic_calls == []
+    assert [bridge.camera_uid for bridge in app.BRIDGES.values()] == ["A", "B"]
+
+
+def test_build_fingerprint_reports_runtime_identity(entrypoint, monkeypatch, capsys):
+    app, _options, _logs = entrypoint
+    monkeypatch.setenv("OKAM_BUILD_VERSION", "1.2.13")
+    monkeypatch.setenv("OKAM_BUILD_COMMIT", "commit-under-test")
+    app.log_build_fingerprint()
+    output = capsys.readouterr().out
+    assert "build_fingerprint build_version=1.2.13 build_commit=commit-under-test" in output
+    assert "architecture=" in output
+    assert "runtime_module bridge=" in output
+    assert "session=" in output and "auth=" in output
+    assert "rtsp=" in output and "p2p=" in output

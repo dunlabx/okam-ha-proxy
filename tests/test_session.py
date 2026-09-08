@@ -3,6 +3,9 @@ import subprocess
 import threading
 import time
 
+import pytest
+
+from okam_native.p2p import P2PError
 from okam_native.session import NativeStreamSession
 
 
@@ -133,6 +136,53 @@ def test_session_lifecycle_logs_identify_camera_and_process_generation() -> None
         for line in lines
     )
     assert any("native_session_process" in line and "session_generation=1" in line for line in lines)
+
+
+def test_transport_failure_returns_to_retryable_state_without_overlap() -> None:
+    starts = []
+    process = FakeProcess()
+
+    def start():
+        starts.append(True)
+        if len(starts) == 1:
+            raise P2PError("transport unavailable")
+        return process
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    with pytest.raises(P2PError):
+        session.acquire(reason="ha_live")
+    assert session.status().state == "FAILED"
+    subscription = session.acquire(reason="retry")
+    try:
+        assert len(starts) == 2
+        assert session.status().state == "CONNECTED"
+    finally:
+        subscription.close()
+        session.close()
+
+
+def test_clean_disconnect_allows_a_fresh_reconnect_generation() -> None:
+    processes = [FakeProcess(), FakeProcess()]
+    starts = []
+
+    def start():
+        starts.append(True)
+        return processes[len(starts) - 1]
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    first = session.acquire(reason="ha_live")
+    processes[0].terminate()
+    deadline = time.monotonic() + 2
+    while session.status().running and time.monotonic() < deadline:
+        time.sleep(0.01)
+    first.close()
+    second = session.acquire(reason="recovery")
+    try:
+        assert len(starts) == 2
+        assert session.status().state == "CONNECTED"
+    finally:
+        second.close()
+        session.close()
 
 
 def _unit(kind: int, body: bytes = b"\x00") -> bytes:

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.13
+
+- Prevents persisted diagnostic switches from authenticating cameras during startup.
+- Adds runtime build fingerprints, import-path diagnostics, and reconnect state markers.
+
 ## 1.2.12
 
 - Removes the obsolete global camera password option.

@@ -90,6 +90,27 @@ AUTHENTICATOR = CameraAuthenticator(
 )
 
 
+def log_build_fingerprint() -> None:
+    """Emit the immutable build/runtime identity before serving requests."""
+
+    print(
+        "build_fingerprint "
+        f"build_version={os.environ.get('OKAM_BUILD_VERSION', 'unknown')} "
+        f"build_commit={os.environ.get('OKAM_BUILD_COMMIT', 'unknown')} "
+        f"architecture={RUNTIME_ARCH}",
+        flush=True,
+    )
+    print(
+        "runtime_module "
+        f"bridge={__import__('okam_native.bridge', fromlist=['__file__']).__file__} "
+        f"session={__import__('okam_native.session', fromlist=['__file__']).__file__} "
+        f"auth={__import__('okam_native.auth', fromlist=['__file__']).__file__} "
+        f"rtsp={__import__('okam_native.rtsp', fromlist=['__file__']).__file__} "
+        f"p2p={__import__('okam_native.p2p', fromlist=['__file__']).__file__}",
+        flush=True,
+    )
+
+
 def set_status(**values: object) -> None:
     with LOCK:
         STATUS.update(values)
@@ -599,20 +620,9 @@ def initialize_camera_runtimes(
     registered = 0
     for selection in selections:
         try:
-            # Optional diagnostics are deliberately opt-in. Normal startup
-            # has one authoritative auth path in configure_bridge(); this
-            # legacy-compatible probe can never run during ordinary streaming.
-            diagnostic_options = load_options()
-            if any(
-                diagnostic_options.get(key) is True
-                for key in (
-                    "run_connect_test",
-                    "run_auth_test",
-                    "run_stream_test",
-                    "run_snapshot_test",
-                )
-            ):
-                run_p2p_acceptance(selection)
+            # Startup only registers lazy runtimes. Explicit diagnostic probes
+            # remain available through run_p2p_acceptance(), but are never
+            # promoted into mandatory camera login by persisted options.
             if configure_bridge(
                 selection,
                 selected_count=len(selections),
@@ -630,6 +640,7 @@ def initialize_camera_runtimes(
 
 def main() -> int:
     options = load_options()
+    log_build_fingerprint()
     debug_credentials = options.get("debug_credentials") is True
     print(f"credential_debug_enabled={str(debug_credentials).lower()}", flush=True)
     if debug_credentials:
@@ -666,6 +677,7 @@ def main() -> int:
             initialize_camera_runtimes(selections, ACCOUNT_DEVICES)
             if not BRIDGES.values():
                 raise RuntimeError("no selected camera runtime is available")
+            print("startup_ready=true", flush=True)
     except Exception as error:
         phase = "startup_error" if STATUS["loader_ready"] else "native_loader_error"
         detail = (

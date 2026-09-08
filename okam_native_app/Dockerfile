@@ -106,8 +106,10 @@ RUN ffmpeg -hide_banner -loglevel error \
 
 FROM python:3.12-slim-bookworm AS runtime-base
 ARG BUILD_VERSION=1.2.3
+ARG BUILD_COMMIT=unknown
 ARG BUILD_ARCH
 LABEL io.hass.version=$BUILD_VERSION \
+      org.opencontainers.image.revision=$BUILD_COMMIT \
       io.hass.arch=$BUILD_ARCH \
       io.hass.type="app" \
       io.hass.name="O-KAM HA Proxy"
@@ -130,9 +132,11 @@ ENTRYPOINT ["python3", "/opt/okam/app_entrypoint.py"]
 
 FROM runtime-base AS runtime-amd64
 ENV OKAM_RUNTIME_ARCH=amd64
+ENV OKAM_BUILD_VERSION=$BUILD_VERSION OKAM_BUILD_COMMIT=$BUILD_COMMIT
 
 FROM runtime-base AS runtime-arm64
 ENV OKAM_RUNTIME_ARCH=arm64
+ENV OKAM_BUILD_VERSION=$BUILD_VERSION OKAM_BUILD_COMMIT=$BUILD_COMMIT
 COPY --from=native-build-arm64 /out/hybris /opt/hybris
 COPY --from=native-build-arm64 /out/bionic /opt/bionic
 COPY --from=native-build-arm64 /out/android-stubs /opt/android-stubs

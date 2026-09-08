@@ -150,6 +150,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=smoke-${{ matrix.ha_arch }}
           build-args: |
             BUILD_VERSION=${{ needs.prepare.outputs.version }}
+            BUILD_COMMIT=${{ github.sha }}
             BUILD_ARCH=${{ matrix.ha_arch }}
             TARGETARCH=${{ matrix.docker_arch }}
       - name: Smoke-test the exact pushed artifact
@@ -173,6 +174,21 @@ jobs:
           grep -q 'api_device_raw' /tmp/account.py
           grep -q 'auth_method' /tmp/app_entrypoint.py
           grep -q 'open_authenticated_stream_process' /tmp/app_entrypoint.py
+          grep -q 'build_fingerprint' /tmp/app_entrypoint.py
+          grep -q 'runtime_module' /tmp/app_entrypoint.py
+          for pair in \
+            'okam_native/auth.py /tmp/auth.py' \
+            'okam_native/account.py /tmp/account.py' \
+            'okam_native/bridge.py /tmp/bridge.py' \
+            'okam_native/session.py /tmp/session.py' \
+            'okam_native/rtsp.py /tmp/rtsp.py' \
+            'okam_native/p2p.py /tmp/p2p.py'; do
+            set -- $pair
+            docker cp "$cid:/opt/okam/$1" "/tmp/$(basename "$1")"
+            test "$(sha256sum "src/$1" | cut -d' ' -f1)" = "$(sha256sum "/tmp/$(basename "$1")" | cut -d' ' -f1)"
+          done
+          docker run --rm --platform '${{ matrix.platform }}' --entrypoint python3 "$IMAGE" -c \
+            'import os,sys,os.path,okam_native,okam_native.auth,okam_native.bridge,okam_native.session,okam_native.rtsp,okam_native.p2p; print("sys.path",sys.path); print("PYTHONPATH",os.environ.get("PYTHONPATH")); print("cwd",os.getcwd()); print("modules",okam_native.__file__,okam_native.auth.__file__,okam_native.bridge.__file__,okam_native.session.__file__,okam_native.rtsp.__file__,okam_native.p2p.__file__); print("fingerprint",os.environ.get("OKAM_BUILD_VERSION"),os.environ.get("OKAM_BUILD_COMMIT"))'
 
   prepare:
     runs-on: ubuntu-latest
