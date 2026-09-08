@@ -22,12 +22,12 @@ from .const import (
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
 )
-
-
-class CameraSelectionRequired(ValueError):
-    def __init__(self, devices: list[dict[str, Any]]) -> None:
-        super().__init__("camera_selection_required")
-        self.devices = devices
+from .identity import (
+    CameraSelectionRequired,
+    camera_uid,
+    resolve_reference,
+    validated_from_devices,
+)
 
 
 def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
@@ -59,8 +59,7 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
 
 
 def _camera_uid(item: dict[str, Any]) -> str:
-    value = item.get("camera_uid") or item.get("camera_id")
-    return value.strip() if isinstance(value, str) else ""
+    return camera_uid(item)
 
 
 def _camera_selector(devices: list[dict[str, Any]]) -> vol.Schema:
@@ -109,50 +108,17 @@ def _matching_devices(
     ]
 
 
+_resolve_reference = resolve_reference
+_validated_from_devices = validated_from_devices
+
+
 async def _validate(hass, data: dict[str, Any]) -> dict[str, Any]:
     api = OkamApi(
         async_get_clientsession(hass), data[CONF_BRIDGE_URL], data[CONF_API_TOKEN]
     )
     await api.health()
     devices = await api.devices()
-    if not devices:
-        raise ValueError("camera_not_found")
-    requested_uid = data.get(CONF_CAMERA_UID)
-    requested_id = data.get(CONF_CAMERA_ID)
-    selected = None
-    if isinstance(requested_uid, str) and requested_uid:
-        matches = [
-            item
-            for item in devices
-            if _camera_uid(item).casefold() == requested_uid.strip().casefold()
-        ]
-        if len(matches) > 1:
-            raise CameraSelectionRequired(devices)
-        selected = matches[0] if matches else None
-        if selected is None:
-            raise CameraSelectionRequired(devices)
-    elif isinstance(requested_id, str) and requested_id:
-        matches = _matching_devices(devices, "camera_id", requested_id)
-        if len(matches) > 1:
-            raise CameraSelectionRequired(devices)
-        selected = matches[0] if matches else None
-    if selected is None and len(devices) == 1:
-        selected = devices[0]
-    if selected is None:
-        raise CameraSelectionRequired(devices)
-    uid = _camera_uid(selected)
-    if not uid:
-        raise ValueError("camera_not_found")
-    result = dict(data)
-    result[CONF_CAMERA_UID] = uid
-    result[CONF_CAMERA_ID] = str(selected.get("camera_id") or uid)
-    name = selected.get("name")
-    if isinstance(name, str) and name:
-        result["camera_name"] = name
-    alias = selected.get("alias")
-    if isinstance(alias, str) and alias:
-        result["camera_alias"] = alias
-    return result
+    return _validated_from_devices(data, devices)
 
 
 async def _discover(hass, data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -203,13 +169,18 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ValueError:
                 errors["base"] = "camera_not_found"
             else:
-                self._pending_data = dict(user_input)
-                self._pending_devices = devices
-                return self.async_show_form(
-                    step_id="camera",
-                    data_schema=_camera_selector(devices),
-                    errors={},
-                )
+                try:
+                    return await self._create_camera_entry(
+                        _validated_from_devices(user_input, devices)
+                    )
+                except CameraSelectionRequired:
+                    self._pending_data = dict(user_input)
+                    self._pending_devices = devices
+                    return self.async_show_form(
+                        step_id="camera",
+                        data_schema=_camera_selector(devices),
+                        errors={},
+                    )
         return self.async_show_form(
             step_id="user", data_schema=_schema(user_input), errors=errors
         )
@@ -252,11 +223,15 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._pending_entry = entry
                 self._pending_data = dict(user_input)
                 self._pending_devices = devices
-                return self.async_show_form(
-                    step_id="reconfigure_camera",
-                    data_schema=_camera_selector(devices),
-                    errors={},
-                )
+                try:
+                    validated = _validated_from_devices(user_input, devices)
+                except CameraSelectionRequired:
+                    return self.async_show_form(
+                        step_id="reconfigure_camera",
+                        data_schema=_camera_selector(devices),
+                        errors={},
+                    )
+                return self.async_update_reload_and_abort(entry, data=validated)
         return self.async_show_form(
             step_id="reconfigure", data_schema=_schema(entry.data), errors=errors
         )

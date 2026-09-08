@@ -65,7 +65,7 @@ async def _resolve_camera_uid(
     devices = await api.devices()
 
     def uid(item: dict) -> str:
-        value = item.get("camera_uid") or item.get("camera_id")
+        value = item.get("uid") or item.get("camera_uid") or item.get("camera_id")
         return value.strip() if isinstance(value, str) else ""
 
     selected = None
@@ -85,15 +85,17 @@ async def _resolve_camera_uid(
                 "The configured camera UID is no longer available; reconfigure this entry"
             )
     elif isinstance(legacy_id, str) and legacy_id:
-        matches = [
-            item
-            for item in devices
-            if isinstance(item.get("camera_id"), str)
-            and item["camera_id"].strip().casefold() == legacy_id.strip().casefold()
-        ]
+        normalized = legacy_id.strip().casefold()
+        matches = [item for item in devices if uid(item).casefold() == normalized]
+        if not matches:
+            matches = [
+                item for item in devices
+                if isinstance(item.get("alias"), str)
+                and item["alias"].strip().casefold() == normalized
+            ]
         if len(matches) > 1:
             raise ConfigEntryNotReady(
-                "The legacy camera ID matches multiple cameras; reconfigure this entry"
+                "The configured camera UID or alias matches multiple cameras; reconfigure this entry"
             )
         selected = matches[0] if matches else None
     if selected is None and len(devices) == 1:
@@ -114,6 +116,7 @@ async def _resolve_camera_uid(
     ):
         data = dict(entry.data)
         data[CONF_CAMERA_UID] = selected_uid
+        data[CONF_CAMERA_ID] = selected_uid
         if isinstance(selected_name, str) and selected_name:
             data["camera_name"] = selected_name
         if isinstance(selected_alias, str) and selected_alias:

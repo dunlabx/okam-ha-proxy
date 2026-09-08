@@ -83,6 +83,7 @@ STATUS: dict[str, object] = {
 }
 LOCK = threading.Lock()
 BRIDGES = BridgeRegistry()
+ACCOUNT_DEVICES: tuple[AccountDevice, ...] = ()
 AUTHENTICATOR = CameraAuthenticator(
     CredentialSourceCache(DATA / "camera_auth_cache.json")
 )
@@ -187,6 +188,7 @@ def load_options() -> dict[str, object]:
 
 
 def enumerate_account() -> list[CameraSelection] | None:
+    global ACCOUNT_DEVICES
     options = load_options()
     username = options.get("account_username")
     password = options.get("account_password")
@@ -200,6 +202,7 @@ def enumerate_account() -> list[CameraSelection] | None:
     finally:
         username = ""
         password = ""
+    ACCOUNT_DEVICES = tuple(devices)
     selected = configured_camera_selections(devices, options)
     set_status(
         account_ready=True,
@@ -215,6 +218,14 @@ def enumerate_account() -> list[CameraSelection] | None:
         f"parsed_count={len(devices)} selected_count={len(selected)}",
         flush=True,
     )
+    for item in devices:
+        print(
+            f"account_device_parsed uid={item.uid} nickname={item.name} "
+            f"password_present={str(item.password_present).lower()} "
+            f"password_nonempty={str(bool(item.device_password)).lower()} "
+            f"password_length={len(item.device_password)}",
+            flush=True,
+        )
     for item in selected:
         print(
             f"camera_registered uid={item.device.uid} "
@@ -268,7 +279,12 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
     if not enabled and not auth_enabled and not stream_enabled:
         return
     candidates = (
-        build_candidates(device.device_password, options.get("camera_password"))
+        build_candidates(
+            device.device_password,
+            options.get("camera_password"),
+            account_device_uid=device.uid,
+            account_devices=ACCOUNT_DEVICES,
+        )
         if auth_enabled
         else ()
     )
@@ -432,7 +448,8 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
 
 
 def configure_bridge(
-    selection: CameraSelection, *, selected_count: int
+    selection: CameraSelection, *, selected_count: int,
+    account_devices: tuple[AccountDevice, ...] | None = None,
 ) -> CameraBridge | None:
     """Prepare the long-lived, on-demand runtime without waking the camera."""
 
@@ -442,7 +459,10 @@ def configure_bridge(
     alias = selection.alias
     idle_timeout = options.get("idle_timeout_seconds", 120)
     candidates = build_candidates(
-        device.device_password, options.get("camera_password")
+        device.device_password,
+        options.get("camera_password"),
+        account_device_uid=device.uid,
+        account_devices=account_devices if account_devices is not None else ACCOUNT_DEVICES,
     )
     if not isinstance(api_token, str) or not 16 <= len(api_token) <= 1024:
         set_status(configuration_required=True, camera_ready=False, phase="api_token_required")
@@ -510,14 +530,34 @@ def configure_bridge(
     return bridge
 
 
-def initialize_camera_runtimes(selections: list[CameraSelection]) -> int:
+def initialize_camera_runtimes(
+    selections: list[CameraSelection],
+    account_devices: tuple[AccountDevice, ...] | None = None,
+) -> int:
     """Run the production per-camera setup, isolating failures by UID."""
 
     registered = 0
     for selection in selections:
         try:
-            run_p2p_acceptance(selection.device)
-            if configure_bridge(selection, selected_count=len(selections)) is not None:
+            # Optional diagnostics are deliberately opt-in. Normal startup
+            # has one authoritative auth path in configure_bridge(); this
+            # legacy-compatible probe can never run during ordinary streaming.
+            diagnostic_options = load_options()
+            if any(
+                diagnostic_options.get(key) is True
+                for key in (
+                    "run_connect_test",
+                    "run_auth_test",
+                    "run_stream_test",
+                    "run_snapshot_test",
+                )
+            ):
+                run_p2p_acceptance(selection.device)
+            if configure_bridge(
+                selection,
+                selected_count=len(selections),
+                account_devices=account_devices,
+            ) is not None:
                 registered += 1
         except Exception as error:
             print(
@@ -557,7 +597,7 @@ def main() -> int:
         load_vendor_runtime()
         selections = enumerate_account()
         if selections is not None:
-            initialize_camera_runtimes(selections)
+            initialize_camera_runtimes(selections, ACCOUNT_DEVICES)
             if not BRIDGES.values():
                 raise RuntimeError("no selected camera runtime is available")
     except Exception as error:

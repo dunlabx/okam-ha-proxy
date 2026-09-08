@@ -15,10 +15,10 @@ version:
 - **HA integration** (`custom_components/okam/`) — creates the `camera.*`
   entity (live view + snapshots) that talks to the bridge over HTTP.
 
-## Current branch: `codex/amd64-support-wip` — DO NOT MERGE/RELEASE YET
+## Current architecture and release rules
 
-This checkout is the WIP amd64 effort. Read `docs/amd64-development-handoff.md`
-in full before touching transport code — it is the source of truth. Key points:
+Read `docs/amd64-development-handoff.md` before touching transport code. Key
+points:
 
 - Goal: one multi-arch image for both 64-bit arches.
   - `aarch64`: keep the proven official ARM64 transport lib behind the
@@ -35,6 +35,22 @@ in full before touching transport code — it is the source of truth. Key points
   camera, one session at a time.
 - 11 physical release gates (see handoff §"Required release gates") must pass
   before `1.2.0` ships. These require a real camera and cannot be verified here.
+
+## Camera identity and authentication
+
+- Canonical camera identity is the account UID. An alias is user-friendly
+  metadata only; HACS may accept either UID or alias but stores UID.
+- The add-on accepts dynamic `cameras` entries with required `uid` and optional
+  alias. Empty means all account cameras.
+- Account device passwords are resolved independently per UID. Known passwords
+  from other devices in the same authenticated account may be boundedly
+  cross-tried when the association is unreliable.
+- Advance to another candidate only for an explicit login rejection. Transport
+  failures and missing login responses are not credential failures.
+- Successful credential sources are cached per UID (including source UID for a
+  cross-camera password); no plaintext password is persisted or logged.
+- There is one authoritative native authentication path. Do not restore a
+  legacy auth probe or authenticate in one process before starting another.
 
 ### Working rule for protocol changes
 
@@ -91,6 +107,11 @@ Optional extras (`pyproject.toml`): `trace` (frida), `inspect`/`test`
 - `tests/` — pytest suite. `.github/workflows/` — multi-arch build/publish.
 
 ## Before proposing a release
+
+Run source-level gates before any image build: compileall, YAML/JSON parsing,
+the complete unit and production integration suites, add-on schema/HACS checks,
+RTSP regressions, and `git diff --check`. Build architecture artifacts once,
+smoke-test those exact artifacts, then promote the same artifacts to GHCR.
 
 The GHCR version and `latest` tags must carry both `linux/amd64` and
 `linux/arm64` manifests, the aarch64 Raspberry Pi 4 regression must still pass,

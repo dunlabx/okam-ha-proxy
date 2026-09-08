@@ -148,8 +148,29 @@ def test_production_lazy_stream_uses_bounded_fallback_and_reuses_cache(entrypoin
     assert any("candidate=cached_fallback_888888" in line for line in logs)
 
 
+def test_production_path_propagates_other_account_password(entrypoint, monkeypatch):
+    app, _options, logs = entrypoint
+    devices = [
+        AccountDevice("CAMERA_A", "A", "password-a"),
+        AccountDevice("CAMERA_B", "B", "password-b"),
+    ]
+    monkeypatch.setattr(
+        app,
+        "Eye4AccountClient",
+        type("FakeAccount", (), {"last_raw_device_count": 2, "enumerate": lambda self, _u, _p: devices}),
+    )
+    selections = app.enumerate_account()
+    assert selections is not None
+    monkeypatch.setattr(app, "open_authenticated_stream_process", lambda *args, **kwargs: (_auth_result(kwargs.get("credential_index") == 0 and args[4] == "password-b", 0 if args[4] == "password-b" else -1), FakeProcess()))
+    assert app.initialize_camera_runtimes(selections, tuple(devices)) == 2
+    first = app.BRIDGES.values()[0].session.acquire()
+    first.close()
+    assert any("source_uid=CAMERA_B" in line for line in logs)
+
+
 def test_production_startup_isolates_one_camera_failure(entrypoint, monkeypatch):
-    app, _options, _logs = entrypoint
+    app, options, _logs = entrypoint
+    options["run_auth_test"] = True
     selections = [
         type("Selection", (), {"device": AccountDevice("A", "A", "pw"), "alias": None})(),
         type("Selection", (), {"device": AccountDevice("B", "B", "pw"), "alias": None})(),

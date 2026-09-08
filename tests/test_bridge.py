@@ -80,7 +80,7 @@ def test_bridge_api_is_authenticated_and_exposes_native_camera() -> None:
             server, "GET", "/api/devices", token="safe-api-token-123"
         )
         assert code == 200
-        assert json.loads(payload) == [{"camera_id": "cabin", "name": "Cabin"}]
+        assert json.loads(payload) == [{"uid": "cabin", "camera_id": "cabin", "camera_uid": "cabin", "alias": None, "name": "Cabin"}]
 
         code, _, payload = request(
             server,
@@ -159,8 +159,8 @@ def test_devices_endpoint_lists_each_enabled_camera_without_credentials() -> Non
         )
         assert code == 200
         assert json.loads(payload) == [
-            {"camera_id": "front-alias", "camera_uid": "UID_FRONT", "name": "Front Door"},
-            {"camera_id": "back-alias", "camera_uid": "UID_BACK", "name": "Back Door"},
+            {"uid": "UID_FRONT", "camera_id": "front-alias", "camera_uid": "UID_FRONT", "alias": "front-alias", "name": "Front Door"},
+            {"uid": "UID_BACK", "camera_id": "back-alias", "camera_uid": "UID_BACK", "alias": "back-alias", "name": "Back Door"},
         ]
     finally:
         server.shutdown()

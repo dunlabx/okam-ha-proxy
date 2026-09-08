@@ -106,7 +106,7 @@ jobs:
 
   container_smoke_build:
     name: Unreleased container smoke (${{ matrix.platform }})
-    needs: [startup_integration_tests, addon_validation, hacs_validation]
+    needs: [prepare, startup_integration_tests, addon_validation, hacs_validation]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -114,39 +114,51 @@ jobs:
         include:
           - platform: linux/arm64
             arch: arm64
+            docker_arch: arm64
             ha_arch: aarch64
           - platform: linux/amd64
             arch: amd64
+            docker_arch: amd64
             ha_arch: amd64
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
-      - name: Build unreleased smoke image
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish candidate artifact once
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./okam_native_app/Dockerfile
           platforms: ${{ matrix.platform }}
           target: final
-          outputs: type=local,dest=/tmp/okam-rootfs-${{ matrix.arch }}
+          push: true
+          tags: ghcr.io/dunlabx/okam-ha-proxy:${{ needs.prepare.outputs.version }}-candidate-${{ github.sha }}-${{ matrix.ha_arch }}
           cache-from: type=gha,scope=${{ matrix.ha_arch }}
           cache-to: type=gha,mode=max,scope=smoke-${{ matrix.ha_arch }}
           build-args: |
-            BUILD_VERSION=prebuild-${{ github.sha }}
+            BUILD_VERSION=${{ needs.prepare.outputs.version }}
             BUILD_ARCH=${{ matrix.ha_arch }}
-            TARGETARCH=${{ matrix.arch }}
-      - name: Inspect container contents and startup wiring
+            TARGETARCH=${{ matrix.docker_arch }}
+      - name: Smoke-test the exact pushed artifact
         shell: bash
+        env:
+          IMAGE: ghcr.io/dunlabx/okam-ha-proxy:${{ needs.prepare.outputs.version }}-candidate-${{ github.sha }}-${{ matrix.ha_arch }}
         run: |
           set -euo pipefail
-          rootfs="/tmp/okam-rootfs-${{ matrix.arch }}"
-          test -f "$rootfs/opt/okam/app_entrypoint.py"
-          test -f "$rootfs/opt/okam/okam_native/auth.py"
-          test -f "$rootfs/opt/okam/okam_native/account.py"
-          grep -q 'camera_auth_attempt' "$rootfs/opt/okam/okam_native/auth.py"
-          grep -q 'configured_camera_selections' "$rootfs/opt/okam/okam_native/account.py"
-          grep -q 'open_authenticated_stream_process' "$rootfs/opt/okam/app_entrypoint.py"
+          docker pull --platform '${{ matrix.platform }}' "$IMAGE"
+          cid="$(docker create --platform '${{ matrix.platform }}' "$IMAGE")"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          docker cp "$cid:/opt/okam/app_entrypoint.py" /tmp/app_entrypoint.py
+          docker cp "$cid:/opt/okam/okam_native/auth.py" /tmp/auth.py
+          docker cp "$cid:/opt/okam/okam_native/account.py" /tmp/account.py
+          grep -q 'camera_auth_attempt' /tmp/auth.py
+          grep -q 'configured_camera_selections' /tmp/account.py
+          grep -q 'open_authenticated_stream_process' /tmp/app_entrypoint.py
 
   prepare:
     runs-on: ubuntu-latest
@@ -178,46 +190,8 @@ jobs:
             echo "move_latest=false" >> "$GITHUB_OUTPUT"
           fi
 
-  build:
-    needs: [prepare, container_smoke_build]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - ha_arch: aarch64
-            platform: linux/arm64
-            docker_arch: arm64
-          - ha_arch: amd64
-            platform: linux/amd64
-            docker_arch: amd64
-    steps:
-      - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and publish ${{ matrix.ha_arch }} app
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./okam_native_app/Dockerfile
-          platforms: ${{ matrix.platform }}
-          push: true
-          tags: |
-            ghcr.io/dunlabx/okam-ha-proxy:${{ needs.prepare.outputs.version }}-${{ matrix.ha_arch }}
-          build-args: |
-            BUILD_VERSION=${{ needs.prepare.outputs.version }}
-            BUILD_ARCH=${{ matrix.ha_arch }}
-            TARGETARCH=${{ matrix.docker_arch }}
-          cache-from: type=gha,scope=${{ matrix.ha_arch }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.ha_arch }}
-
   publish:
-    needs: [prepare, build]
+    needs: [prepare, container_smoke_build]
     runs-on: ubuntu-latest
     steps:
       - uses: docker/setup-buildx-action@v3
@@ -240,6 +214,12 @@ jobs:
           else
             echo "Leaving :latest untouched; publishing $VERSION only."
           fi
+          # Promote the exact architecture artifacts built and smoke-tested
+          # above; this job performs no Docker compilation.
+          docker buildx imagetools create --tag "$image:$VERSION-aarch64" \
+            "$image:$VERSION-candidate-${GITHUB_SHA}-aarch64"
+          docker buildx imagetools create --tag "$image:$VERSION-amd64" \
+            "$image:$VERSION-candidate-${GITHUB_SHA}-amd64"
           docker buildx imagetools create "${tags[@]}" \
             "$image:$VERSION-aarch64" \
             "$image:$VERSION-amd64"

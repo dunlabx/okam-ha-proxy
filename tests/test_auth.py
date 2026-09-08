@@ -1,4 +1,5 @@
 import pytest
+from okam_native.account import AccountDevice
 
 from okam_native.auth import (
     ACCOUNT_SOURCE,
@@ -202,3 +203,61 @@ def test_logs_identify_uid_and_source_without_password(tmp_path) -> None:
     assert "uid=UID_A" in rendered
     assert "candidate=account_device_password" in rendered
     assert "account-secret" not in rendered
+
+
+def test_all_account_device_passwords_are_bounded_and_uid_tagged() -> None:
+    candidates = build_candidates(
+        "password-a",
+        account_device_uid="UID_A",
+        account_devices=[
+            AccountDevice("UID_A", "A", "password-a"),
+            AccountDevice("UID_B", "B", "password-b"),
+            AccountDevice("UID_C", "C", "password-b"),
+            AccountDevice("UID_D", "D", ""),
+        ],
+    )
+    assert [(item.source, item.source_uid) for item in candidates] == [
+        (ACCOUNT_SOURCE, "UID_A"),
+        (ACCOUNT_SOURCE, "UID_B"),
+        (FALLBACK_SOURCE, None),
+    ]
+
+
+def test_cross_camera_success_is_cached_with_source_uid(tmp_path) -> None:
+    candidates = build_candidates(
+        "password-a",
+        account_device_uid="UID_A",
+        account_devices=[AccountDevice("UID_B", "B", "password-b")],
+    )
+    cache = CredentialSourceCache(tmp_path / "camera_auth_cache.json")
+    manager = CameraAuthenticator(cache, logger=lambda _line: None)
+    selected, _ = manager.authenticate(
+        "UID_A",
+        candidates,
+        lambda candidate: _result(
+            authenticated=candidate.source_uid == "UID_B",
+            login_result=0 if candidate.source_uid == "UID_B" else -1,
+        ),
+    )
+    assert selected.source == ACCOUNT_SOURCE
+    assert selected.source_uid == "UID_B"
+    assert cache.get("UID_A") == ACCOUNT_SOURCE
+    assert cache.get_source_uid("UID_A") == "UID_B"
+
+
+def test_cross_camera_cache_is_reconstructed_from_fresh_enumeration(tmp_path) -> None:
+    path = tmp_path / "camera_auth_cache.json"
+    cache = CredentialSourceCache(path)
+    cache.set("UID_A", ACCOUNT_SOURCE, "UID_B")
+    candidates = build_candidates(
+        "new-a",
+        account_device_uid="UID_A",
+        account_devices=[AccountDevice("UID_B", "B", "known-b")],
+    )
+    calls = []
+    selected, _ = CameraAuthenticator(cache, logger=lambda _line: None).authenticate(
+        "UID_A", candidates,
+        lambda candidate: (calls.append(candidate.source_uid) or _result(authenticated=True)),
+    )
+    assert selected.source_uid == "UID_B"
+    assert calls == ["UID_B"]

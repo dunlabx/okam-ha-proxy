@@ -113,7 +113,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.3"
+    assert manifest["version"] == "1.2.4"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -171,6 +171,9 @@ def test_publish_workflow_builds_one_multi_architecture_image() -> None:
     assert "docker buildx imagetools create" in workflow
     assert '$VERSION-aarch64"' in workflow
     assert '$VERSION-amd64"' in workflow
+    assert workflow.count("docker/build-push-action@v6") == 1
+    assert "-candidate-${GITHUB_SHA}-" in workflow
+    assert "Promote the exact architecture artifacts" in workflow
 
 
 def test_repository_contains_camera_integration_for_native_api() -> None:
@@ -180,7 +183,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.3"' in manifest
+    assert '"version": "1.2.4"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera

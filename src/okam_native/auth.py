@@ -23,6 +23,7 @@ KNOWN_SOURCES = frozenset({CONFIGURED_SOURCE, ACCOUNT_SOURCE, FALLBACK_SOURCE})
 class CredentialCandidate:
     source: str
     password: str
+    source_uid: str | None = None
 
 
 class AuthenticationRejected(P2PError):
@@ -41,8 +42,19 @@ class AuthenticationTransportError(P2PError):
 def build_candidates(
     account_device_password: object,
     configured_password: object = None,
+    *,
+    account_device_uid: str | None = None,
+    account_devices: Iterable[object] | None = None,
 ) -> tuple[CredentialCandidate, ...]:
-    """Build authoritative, bounded candidates and deduplicate their values."""
+    """Build bounded candidates from the authenticated account response.
+
+    ``/PC/device/show`` associates the local password with each device object
+    through that object's ``uid`` and ``password`` keys.  The associated value
+    is tried first (after an explicit administrator override), followed by
+    distinct non-empty passwords from the other objects in the same response.
+    The source UID is metadata only; plaintext values never enter logs/cache.
+    The original two-argument form remains supported for callers/tests.
+    """
 
     candidates: list[CredentialCandidate] = []
     seen: set[str] = set()
@@ -50,8 +62,25 @@ def build_candidates(
         if not isinstance(configured_password, str):
             raise P2PError("configured camera credential is invalid")
         candidates.append(CredentialCandidate(CONFIGURED_SOURCE, configured_password))
-    if isinstance(account_device_password, str) and account_device_password:
-        candidates.append(CredentialCandidate(ACCOUNT_SOURCE, account_device_password))
+    associated = account_device_password
+    if not isinstance(associated, str):
+        associated = getattr(account_device_password, "device_password", None)
+    if isinstance(associated, str) and associated:
+        candidates.append(
+            CredentialCandidate(ACCOUNT_SOURCE, associated, account_device_uid)
+        )
+    for item in account_devices or ():
+        uid = getattr(item, "uid", None)
+        password = getattr(item, "device_password", None)
+        if isinstance(item, dict):
+            uid = item.get("uid")
+            password = item.get("password", item.get("device_password"))
+        if not isinstance(uid, str) or not uid:
+            continue
+        if account_device_uid and uid.casefold() == account_device_uid.casefold():
+            continue
+        if isinstance(password, str) and password:
+            candidates.append(CredentialCandidate(ACCOUNT_SOURCE, password, uid))
     candidates.append(CredentialCandidate(FALLBACK_SOURCE, "888888"))
     result: list[CredentialCandidate] = []
     for candidate in candidates:
@@ -63,31 +92,45 @@ def build_candidates(
 
 
 class CredentialSourceCache:
-    """Persist only symbolic successful credential sources, never passwords."""
+    """Persist symbolic source plus UID metadata, never passwords."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.RLock()
         self._values = self._load()
 
-    def _load(self) -> dict[str, str]:
+    def _load(self) -> dict[str, dict[str, str | None]]:
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
             return {}
         if not isinstance(payload, dict):
             return {}
-        return {
-            key: value
-            for key, value in payload.items()
-            if isinstance(key, str)
-            and isinstance(value, str)
-            and value in KNOWN_SOURCES
-        }
+        result: dict[str, dict[str, str | None]] = {}
+        for key, value in payload.items():
+            if not isinstance(key, str):
+                continue
+            if isinstance(value, str) and value in KNOWN_SOURCES:
+                # Backward-compatible 1.2.x cache: account source means the
+                # currently associated account-device password.
+                result[key] = {"source": value, "source_uid": None}
+            elif isinstance(value, dict):
+                source = value.get("source")
+                source_uid = value.get("source_uid")
+                if source in KNOWN_SOURCES and (source_uid is None or isinstance(source_uid, str)):
+                    result[key] = {"source": source, "source_uid": source_uid}
+        return result
 
     def get(self, uid: str) -> str | None:
         with self._lock:
-            return self._values.get(uid)
+            value = self._values.get(uid)
+            return value.get("source") if value else None
+
+    def get_source_uid(self, uid: str) -> str | None:
+        with self._lock:
+            value = self._values.get(uid)
+            source_uid = value.get("source_uid") if value else None
+            return source_uid if isinstance(source_uid, str) else None
 
     def invalidate(self, uid: str) -> None:
         with self._lock:
@@ -95,11 +138,11 @@ class CredentialSourceCache:
                 del self._values[uid]
                 self._save_locked()
 
-    def set(self, uid: str, source: str) -> bool:
+    def set(self, uid: str, source: str, source_uid: str | None = None) -> bool:
         if source not in KNOWN_SOURCES:
             raise ValueError("unknown camera credential source")
         with self._lock:
-            self._values[uid] = source
+            self._values[uid] = {"source": source, "source_uid": source_uid}
             return self._save_locked()
 
     def _save_locked(self) -> bool:
@@ -147,6 +190,27 @@ class CameraAuthenticator:
         with self._lock:
             return self._uid_locks.setdefault(uid, threading.Lock())
 
+    @staticmethod
+    def _matches_cached(candidate: CredentialCandidate, source: str | None, source_uid: str | None) -> bool:
+        if candidate.source != source:
+            return False
+        return source_uid is None or candidate.source_uid == source_uid
+
+    @staticmethod
+    def _label(candidate: CredentialCandidate, cached: bool = False) -> str:
+        label = f"cached_{candidate.source}" if cached else candidate.source
+        if candidate.source_uid:
+            label += f" source_uid={candidate.source_uid}"
+        return label
+
+    def _log_candidates(self, uid: str, candidates: tuple[CredentialCandidate, ...]) -> None:
+        sources = ",".join(
+            self._label(candidate).replace(" ", "_") for candidate in candidates
+        )
+        self._logger(
+            f"camera_auth_candidates uid={uid} candidate_count={len(candidates)} sources={sources}"
+        )
+
     def authenticate(
         self,
         uid: str,
@@ -154,20 +218,21 @@ class CameraAuthenticator:
         attempt: Attempt,
     ) -> tuple[CredentialCandidate, AuthenticationResult]:
         available = tuple(candidates)
-        by_source = {candidate.source: candidate for candidate in available}
         cached_source = self.cache.get(uid)
+        cached_uid = self.cache.get_source_uid(uid)
         ordered: list[tuple[CredentialCandidate, bool]] = []
-        if cached_source in by_source:
-            ordered.append((by_source[cached_source], True))
-        ordered.extend(
-            (candidate, False)
-            for candidate in available
-            if candidate.source != cached_source
+        cached = next(
+            (candidate for candidate in available if self._matches_cached(candidate, cached_source, cached_uid)),
+            None,
         )
+        if cached is not None:
+            ordered.append((cached, True))
+        ordered.extend((candidate, False) for candidate in available if candidate is not cached)
+        self._log_candidates(uid, available)
         results: list[int | None] = []
         with self._lock_for(uid):
             for number, (candidate, cached) in enumerate(ordered, start=1):
-                label = f"cached_{candidate.source}" if cached else candidate.source
+                label = self._label(candidate, cached)
                 self._logger(
                     f"camera_auth_attempt uid={uid} candidate={label} attempt={number}"
                 )
@@ -192,9 +257,10 @@ class CameraAuthenticator:
                         f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
                         f"result=success login_result={result.login_result}"
                     )
-                    persisted = self.cache.set(uid, candidate.source)
+                    persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "
+                        f"source_uid={candidate.source_uid or ''} "
                         f"persisted={str(persisted).lower()}"
                     )
                     return candidate, result
@@ -231,20 +297,21 @@ class CameraAuthenticator:
         """
 
         available = tuple(candidates)
-        by_source = {candidate.source: candidate for candidate in available}
         cached_source = self.cache.get(uid)
+        cached_uid = self.cache.get_source_uid(uid)
         ordered: list[tuple[CredentialCandidate, bool]] = []
-        if cached_source in by_source:
-            ordered.append((by_source[cached_source], True))
-        ordered.extend(
-            (candidate, False)
-            for candidate in available
-            if candidate.source != cached_source
+        cached = next(
+            (candidate for candidate in available if self._matches_cached(candidate, cached_source, cached_uid)),
+            None,
         )
+        if cached is not None:
+            ordered.append((cached, True))
+        ordered.extend((candidate, False) for candidate in available if candidate is not cached)
+        self._log_candidates(uid, available)
         results: list[int | None] = []
         with self._lock_for(uid):
             for number, (candidate, cached) in enumerate(ordered, start=1):
-                label = f"cached_{candidate.source}" if cached else candidate.source
+                label = self._label(candidate, cached)
                 self._logger(
                     f"camera_auth_attempt uid={uid} candidate={label} attempt={number}"
                 )
@@ -270,9 +337,10 @@ class CameraAuthenticator:
                         f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
                         f"result=success login_result={result.login_result}"
                     )
-                    persisted = self.cache.set(uid, candidate.source)
+                    persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "
+                        f"source_uid={candidate.source_uid or ''} "
                         f"persisted={str(persisted).lower()}"
                     )
                     return candidate, result, resource  # type: ignore[return-value]

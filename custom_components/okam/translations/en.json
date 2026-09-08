@@ -8,7 +8,7 @@
         "data": {
           "bridge_url": "Bridge URL",
           "api_token": "API token",
-          "camera_id": "Camera ID",
+          "camera_id": "Camera UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }
@@ -18,7 +18,7 @@
         "data": {
           "bridge_url": "Bridge URL",
           "api_token": "API token",
-          "camera_id": "Camera ID",
+          "camera_id": "Camera UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }

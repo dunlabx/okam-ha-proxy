@@ -34,6 +34,7 @@ def test_official_account_enumeration_flow() -> None:
 
     assert len(devices) == 1
     assert devices[0].name == "Cabin"
+    assert devices[0].password_present is True
     assert "sensitive-device-id" not in repr(devices[0])
     assert "secret" not in repr(devices[0])
     assert [urlsplit(item[0].full_url).path for item in requests] == [
@@ -114,6 +115,29 @@ def test_account_api_returns_two_parsed_cameras() -> None:
     devices = client.enumerate("user@example.com", "secret")
     assert client.last_raw_device_count == 2
     assert [item.uid for item in devices] == ["CAMERA_FRONT", "CAMERA_BACK"]
+    assert [item.password_present for item in devices] == [True, True]
+
+
+def test_account_api_distinguishes_missing_and_empty_password_fields() -> None:
+    def opener(request, _timeout: float) -> bytes:
+        path = urlsplit(request.full_url).path
+        if path == "/user/summary":
+            return b'{"userid":123}'
+        if path == "/login/token":
+            return b'{"token":"opaque"}'
+        if path == "/PC/device/show":
+            return json.dumps([
+                {"uid": "CAMERA_A", "nickname": "A"},
+                {"uid": "CAMERA_B", "nickname": "B", "password": ""},
+                "malformed",
+            ]).encode()
+        raise AssertionError(path)
+
+    devices = Eye4AccountClient(opener=opener).enumerate("u@example.com", "p")
+    assert [(item.uid, item.password_present, item.device_password) for item in devices] == [
+        ("CAMERA_A", False, ""),
+        ("CAMERA_B", True, ""),
+    ]
 
 
 def test_per_camera_aliases_and_legacy_migration() -> None:

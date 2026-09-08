@@ -245,12 +245,10 @@ def make_handler(
                     200,
                     [
                         {
+                            "uid": item.camera_uid,
                             "camera_id": item.camera_id,
-                            **(
-                                {"camera_uid": item.camera_uid}
-                                if item.camera_uid != item.camera_id
-                                else {}
-                            ),
+                            "camera_uid": item.camera_uid,
+                            "alias": item.camera_id if item.camera_id != item.camera_uid else None,
                             "name": item.camera_name,
                         }
                         for item in _all_bridges(bridge_provider)

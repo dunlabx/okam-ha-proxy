@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.4
+
+- Propagates the per-camera `password` returned by `/PC/device/show` through
+  account parsing and production stream authentication.
+- Boundedly cross-tries distinct known account-device passwords per UID and
+  caches the successful source UID independently for each camera.
+- Keeps transport failures separate from explicit authentication rejection and
+  adds safe account/candidate diagnostics without logging secrets.
+- Accepts a HACS camera UID or configured alias while storing the canonical UID,
+  and exposes deterministic UID/alias/name data from `/api/devices`.
+- Adds production-path multi-camera credential and failure-isolation coverage.
+- Documents the upstream O-KAM project attribution and fork maintenance.
+
 ## Next
 
 - Adds explicit per-camera UID and alias mappings while selecting all account cameras by default.

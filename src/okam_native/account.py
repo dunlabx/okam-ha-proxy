@@ -27,6 +27,7 @@ class AccountDevice:
     uid: str = field(repr=False)
     name: str
     device_password: str = field(repr=False)
+    password_present: bool = field(default=False, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,10 @@ def normalize_camera_configurations(value: object) -> list[tuple[str, str | None
                     raise AccountError("cameras contains duplicate aliases")
                 seen_aliases.add(alias_key)
         result.append((uid, alias))
+    uid_keys = {uid.casefold() for uid, _alias in result}
+    for uid, alias in result:
+        if alias is not None and alias.casefold() in uid_keys and alias.casefold() != uid.casefold():
+            raise AccountError("camera alias collides with another camera UID")
     return result
 
 
@@ -255,12 +260,16 @@ class Eye4AccountClient:
             if not isinstance(uid, str) or not 4 <= len(uid) <= 256:
                 continue
             name = item.get("nickname")
+            # The service returns the camera-local credential on the same
+            # object as its UID.  Do not correlate a separate password array
+            # by position: malformed/missing objects are simply ignored.
             device_password = item.get("password")
             result.append(
                 AccountDevice(
                     uid=uid,
                     name=name if isinstance(name, str) and name else "O-KAM camera",
                     device_password=device_password if isinstance(device_password, str) else "",
+                    password_present="password" in item,
                 )
             )
         return result

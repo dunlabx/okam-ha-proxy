@@ -78,7 +78,7 @@ Use:
 
 - Bridge URL: `http://HOME_ASSISTANT_LAN_IP:8099`
 - API token: the value configured above
-- Camera ID: the configured alias, such as `cabin`
+- Camera UID or alias: either the canonical UID or configured alias (the UID is stored)
 - Idle timeout: `120`
 
 Do not use `localhost` for the bridge URL. With the `cabin` alias, a new

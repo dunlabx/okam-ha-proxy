@@ -1,4 +1,12 @@
-# O-KAM Native Bridge for Home Assistant
+# O-KAM HA Proxy for Home Assistant
+
+> **Attribution:** O-KAM HA Proxy is a fork of the original O-KAM HA Native
+> project by [@oleandor](https://github.com/oleandor), available at
+> [oleandor/okam-ha-native](https://github.com/oleandor/okam-ha-native).
+> Additional Home Assistant packaging, integration work, and subsequent
+> modifications are maintained in this fork by
+> [@dunlabx](https://github.com/dunlabx) at
+> [dunlabx/okam-ha-proxy](https://github.com/dunlabx/okam-ha-proxy).
 
 O-KAM Native Bridge connects selected O-KAM Pro cameras directly to Home Assistant on
 64-bit ARM (`aarch64`) and x86-64 (`amd64`) systems. Live video, snapshots,
@@ -149,7 +157,7 @@ This is not the O-KAM account password.
    | --- | --- |
    | Bridge URL | `http://HOME_ASSISTANT_LAN_IP:8099` |
    | API token | The same local token configured in the app |
-   | Camera ID | The configured camera UID or its per-camera alias |
+   | Camera UID or alias | Either the canonical UID or configured alias; the UID is stored |
    | Idle timeout | `120` seconds is recommended |
    | Status refresh interval | `900` seconds is recommended |
 
