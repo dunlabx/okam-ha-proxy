@@ -700,7 +700,7 @@ def open_authenticated_stream_process(
     environment: dict[str, str],
     credential_index: int = 0,
     timeout: float = 80.0,
-) -> tuple[subprocess.Popen[bytes], AuthenticationResult]:
+) -> tuple[AuthenticationResult, subprocess.Popen[bytes]]:
     """Start a stream and wait for the helper's pre-media auth handshake."""
 
     _log_native_login_input(device_password, environment, uid)
@@ -761,8 +761,8 @@ def open_authenticated_stream_process(
         if not result.authenticated:
             if process.poll() is None:
                 process.wait(timeout=10)
-            return process, result
-        return process, result
+            return result, process
+        return result, process
     except P2PError:
         if "process" in locals() and process.poll() is None:
             process.kill()

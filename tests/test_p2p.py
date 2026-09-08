@@ -368,10 +368,12 @@ def test_authenticated_stream_waits_for_pre_media_auth_event(monkeypatch) -> Non
             return 0
 
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
-    process, result = open_authenticated_stream_process(
+    result, process = open_authenticated_stream_process(
         "/helper", "/library", "UID", "service", "secret", environment={}
     )
     assert process is not None
+    assert not hasattr(process, "connected")
+    assert result.connected is True
     assert result.authenticated is True
     assert result.login_result == 0
 

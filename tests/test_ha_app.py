@@ -198,6 +198,10 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     )
     assert "CONF_CAMERA_UID" in config_flow
     assert "SelectSelector" in config_flow
+    assert '"value": "automatic", "label": "Automatic"' in config_flow
+    assert '"value": "password", "label": "Password"' in config_flow
+    assert "CONF_CAMERA_PASSWORD" in config_flow
+    assert "Camera password" in strings
     assert "camera_uid" in strings
     assert "async_update_entry" in integration_init
     assert "type OkamConfigEntry =" not in integration_init

@@ -75,6 +75,7 @@ def test_bridge_api_is_authenticated_and_exposes_native_camera() -> None:
     thread.start()
     try:
         assert request(server, "GET", "/health")[0] == 200
+        assert request(server, "GET", "/ready")[0] == 200
         assert request(server, "GET", "/api/devices")[0] == 401
         code, _, payload = request(
             server, "GET", "/api/devices", token="safe-api-token-123"
