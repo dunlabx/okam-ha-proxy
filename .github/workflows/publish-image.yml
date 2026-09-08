@@ -130,6 +130,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           target: final
           outputs: type=local,dest=/tmp/okam-rootfs-${{ matrix.arch }}
+          cache-from: type=gha,scope=${{ matrix.ha_arch }}
+          cache-to: type=gha,mode=max,scope=smoke-${{ matrix.ha_arch }}
           build-args: |
             BUILD_VERSION=prebuild-${{ github.sha }}
             BUILD_ARCH=${{ matrix.ha_arch }}
