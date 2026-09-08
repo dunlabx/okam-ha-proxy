@@ -259,14 +259,15 @@ class NativeStreamSession:
 
     def status(self) -> SessionStatus:
         with self._lock:
+            running = self._process is not None and self._process.poll() is None
             return SessionStatus(
-                running=self._process is not None and self._process.poll() is None,
+                running=running,
                 viewers=len(self._subscribers),
                 clean_disconnect=self._clean_disconnect,
                 last_error=self._last_error,
                 media_ready=self._media_ready,
                 standby=(
-                    self._process is None
+                    not running
                     and any(passive for _chunks, passive in self._subscribers.values())
                 ),
             )
