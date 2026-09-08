@@ -17,6 +17,10 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .p2p import P2PError
 from .session import NativeStreamSession
+from .logging import timestamped_print
+
+
+print = timestamped_print
 
 
 MAX_REQUEST_BYTES = 4096

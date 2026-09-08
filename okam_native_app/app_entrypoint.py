@@ -48,6 +48,12 @@ from okam_native.p2p import (
 from okam_native.session import NativeStreamSession
 from okam_native.wakeup import WakeError, load_wake_credentials, wake_camera
 from okam_native.rtsp import RTSPServer
+from okam_native.logging import PROCESS_ID, timestamped_print
+
+
+# Keep every add-on application record timestamped without changing protocol
+# payloads emitted by the native helpers.
+print = timestamped_print
 
 
 DATA = Path("/data")
@@ -109,6 +115,18 @@ def log_build_fingerprint() -> None:
         f"p2p={__import__('okam_native.p2p', fromlist=['__file__']).__file__}",
         flush=True,
     )
+
+
+def log_process_boundary(kind: str) -> None:
+    """Mark process generations in concatenated Home Assistant logs."""
+
+    print("=" * 76, flush=True)
+    print(f"O-KAM HA Proxy process {kind}", flush=True)
+    print(f"build_version={os.environ.get('OKAM_BUILD_VERSION', 'unknown')}", flush=True)
+    print(f"commit={os.environ.get('OKAM_BUILD_COMMIT', 'unknown')}", flush=True)
+    print(f"architecture={RUNTIME_ARCH}", flush=True)
+    print(f"process_id={PROCESS_ID}", flush=True)
+    print("=" * 76, flush=True)
 
 
 def set_status(**values: object) -> None:
@@ -273,6 +291,7 @@ def enumerate_account() -> list[CameraSelection] | None:
 
 def p2p_environment(debug_credentials: bool = False) -> dict[str, str]:
     environment = os.environ.copy()
+    environment["OKAM_PROCESS_ID"] = PROCESS_ID
     if debug_credentials:
         environment["OKAM_DEBUG_CREDENTIALS"] = "1"
     else:
@@ -716,6 +735,7 @@ def initialize_camera_runtimes(
 
 def main() -> int:
     options = load_options()
+    log_process_boundary("start")
     log_build_fingerprint()
     debug_credentials = options.get("debug_credentials") is True
     print(f"credential_debug_enabled={str(debug_credentials).lower()}", flush=True)
@@ -766,6 +786,7 @@ def main() -> int:
         print(f"startup_ready=false error={type(error).__name__}{suffix}", flush=True)
     stop.wait()
     BRIDGES.close()
+    log_process_boundary("stop")
     rtsp_server.shutdown()
     rtsp_server.server_close()
     server.shutdown()

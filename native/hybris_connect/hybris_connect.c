@@ -48,9 +48,32 @@ static long long diagnostic_started_ms(void) {
     return (long long)value.tv_sec * 1000LL + value.tv_nsec / 1000000LL;
 }
 
+static void diagnostic_prefix(void) {
+    struct timespec now;
+    struct tm local;
+    char date[32] = "";
+    char offset[8] = "";
+    if (clock_gettime(CLOCK_REALTIME, &now) == 0 &&
+        localtime_r(&now.tv_sec, &local) != NULL) {
+        strftime(date, sizeof(date), "%Y-%m-%d %H:%M:%S", &local);
+        strftime(offset, sizeof(offset), "%z", &local);
+        if (strlen(offset) == 5) {
+            char colonized[8];
+            snprintf(colonized, sizeof(colonized), "%.3s:%.2s", offset, offset + 3);
+            fprintf(stderr, "%s.%03ld %s process_id=%s ", date,
+                    now.tv_nsec / 1000000L, colonized,
+                    getenv("OKAM_PROCESS_ID") != NULL ? getenv("OKAM_PROCESS_ID") : "-");
+            return;
+        }
+    }
+    fprintf(stderr, "1970-01-01 00:00:00.000 +00:00 process_id=%s ",
+            getenv("OKAM_PROCESS_ID") != NULL ? getenv("OKAM_PROCESS_ID") : "-");
+}
+
 static void diagnostic_event(const char *event, const char *uid, const char *extra) {
     static long long started = 0;
     if (started == 0) started = diagnostic_started_ms();
+    diagnostic_prefix();
     fprintf(stderr, "native_diag event=%s camera_uid=%s session_id=%s "
                     "session_generation=%s elapsed_ms=%lld%s%s\n",
             event, uid != NULL ? uid : "-",
@@ -70,6 +93,7 @@ static bool debug_credentials_enabled(void) {
 static void print_debug_credential(const char *stage, const char *uid, const char *password) {
     static const char hex[] = "0123456789abcdef";
     size_t length = strlen(password);
+    diagnostic_prefix();
     fprintf(stderr, "%s uid=%s username_present=true password_present=true "
                     "username='admin' password='", stage, uid);
     for (size_t i = 0; i < length; ++i) {
@@ -488,17 +512,12 @@ int main(int argc, char **argv) {
     if (client != NULL) {
         state = client_connect(client, CONNECT_TYPE_NORMAL, service_parameter, 0);
         connected = state == CONNECT_STATE_ONLINE;
-        {
-            char extra[96];
-            snprintf(extra, sizeof(extra), "connect_state=%d connected=%s", state,
-                     connected ? "true" : "false");
-            diagnostic_event("native_connect_result", uid, extra);
-        }
         if (connected && authenticate) {
             if (debug_credentials_enabled()) {
                 print_debug_credential("ipc_read", uid, device_password);
                 print_debug_credential("native_login_input", uid, device_password);
             } else {
+                diagnostic_prefix();
                 fprintf(stderr, "native_login_input username_present=true "
                                 "password_present=true");
                 if (device_password[0] == '\0') fprintf(stderr, " password_length=0");
@@ -520,6 +539,14 @@ int main(int argc, char **argv) {
                     diagnostic_event("native_login_result", uid, extra);
                 }
             }
+        }
+        {
+            char extra[192];
+            snprintf(extra, sizeof(extra),
+                     "connect_state=%d connected=%s login_response_received=%s login_result=%d",
+                     state, connected ? "true" : "false",
+                     login_response_received ? "true" : "false", login_result);
+            diagnostic_event("native_connect_result", uid, extra);
         }
         if (stream_stdout) {
             fprintf(stderr,

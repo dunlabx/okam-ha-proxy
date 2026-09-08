@@ -14,6 +14,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .logging import timestamped_print
+
+
+print = timestamped_print
+
 
 SERVICE_DIRECTORY_URL = "https://authentication.eye4.cn/getInitstring"
 VIRTUAL_ID_URL = "https://vuid.eye4.cn"

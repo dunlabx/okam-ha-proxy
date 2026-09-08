@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Callable, Iterable, TypeVar
 
 from .p2p import AuthenticationResult, P2PError
+from .logging import timestamped_print
+
+
+print = timestamped_print
 
 
 FALLBACK_SOURCE = "fallback_888888"

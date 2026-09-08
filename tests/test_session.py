@@ -156,7 +156,7 @@ def test_session_diagnostics_identify_live_boundary_without_credentials() -> Non
     subscription.close()
     session.close()
 
-    diagnostics = "\n".join(line for line in lines if line.startswith("native_diag "))
+    diagnostics = "\n".join(line for line in lines if "native_diag " in line)
     assert "event=session_lock_acquired" in diagnostics
     assert "event=first_helper_stdout_chunk" in diagnostics
     assert "event=first_h264_sps" in diagnostics
@@ -212,6 +212,53 @@ def test_clean_disconnect_allows_a_fresh_reconnect_generation() -> None:
     finally:
         second.close()
         session.close()
+
+
+def test_reconnect_waits_for_previous_helper_cleanup() -> None:
+    cleanup_gate = threading.Event()
+
+    class DelayedCleanupProcess(FakeProcess):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stderr = self.GatedPipe(cleanup_gate)
+
+        class GatedPipe(BlockingPipe):
+            def __init__(self, gate: threading.Event) -> None:
+                super().__init__()
+                self._gate = gate
+
+            def read(self, _size: int = -1) -> bytes:
+                self._gate.wait(2)
+                return b""
+
+    processes = [DelayedCleanupProcess(), FakeProcess()]
+    starts: list[bool] = []
+
+    def start() -> FakeProcess:
+        starts.append(True)
+        return processes[len(starts) - 1]
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    first = session.acquire()
+    processes[0].terminate()
+    deadline = time.monotonic() + 1
+    while processes[0].poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    second_result: list[object] = []
+    waiter = threading.Thread(target=lambda: second_result.append(session.acquire()))
+    waiter.start()
+    time.sleep(0.05)
+    assert len(starts) == 1
+    assert waiter.is_alive()
+    cleanup_gate.set()
+    waiter.join(timeout=2)
+    assert not waiter.is_alive()
+    assert len(starts) == 2
+    first.close()
+    second = second_result[0]
+    assert hasattr(second, "close")
+    second.close()  # type: ignore[union-attr]
+    session.close()
 
 
 def _unit(kind: int, body: bytes = b"\x00") -> bytes:

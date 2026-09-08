@@ -10,6 +10,11 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .logging import timestamped_print
+
+
+print = timestamped_print
+
 
 ACCOUNT_ORIGIN = "https://api.eye4.cn"
 MAX_RESPONSE_BYTES = 1024 * 1024

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.17
+
+- Restores the pre-login native timing path after diagnostic instrumentation.
+- Prevents a reconnect from overlapping the previous helper's cleanup.
+- Adds absolute timestamps and process boundaries to runtime diagnostics.
+
 ## 1.2.16
 
 - Adds credential-free ARM64/amd64 live-stream boundary diagnostics for the

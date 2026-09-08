@@ -23,6 +23,7 @@ from .cs2 import (
     read_video_frame,
     write_command,
 )
+from .logging import PROCESS_ID, timestamped_print
 
 
 # The live-start acknowledgement is read before the first media read so it is
@@ -37,13 +38,14 @@ _diagnostic_started = time.monotonic()
 def _diag(event: str, **fields: object) -> None:
     values = {
         "event": event,
+        "process_id": os.environ.get("OKAM_PROCESS_ID", PROCESS_ID),
         "camera_uid": os.environ.get("OKAM_DIAG_CAMERA_UID", "-"),
         "session_id": os.environ.get("OKAM_DIAG_SESSION_ID", "-"),
         "session_generation": os.environ.get("OKAM_DIAG_SESSION_GENERATION", "-"),
         "elapsed_ms": round((time.monotonic() - _diagnostic_started) * 1000, 1),
         **fields,
     }
-    print(
+    timestamped_print(
         "native_diag " + " ".join(f"{key}={value}" for key, value in values.items()),
         file=sys.stderr,
         flush=True,
@@ -151,10 +153,10 @@ def run(
     native_video_packets = 0
     if mode != "connect":
         if _debug_credentials_enabled():
-            print(_credential_debug_line("native_login_input", accepted_password, uid), file=sys.stderr, flush=True)
+            timestamped_print(_credential_debug_line("native_login_input", accepted_password, uid), file=sys.stderr, flush=True)
         else:
             length = " password_length=0" if not accepted_password else ""
-            print(
+            timestamped_print(
                 "native_login_input username_present=true "
                 f"password_present={str(device_password is not None).lower()}" + length,
                 file=sys.stderr,
@@ -330,7 +332,7 @@ def run(
 def main() -> int:
     args = sys.argv[2:]
     if not args or len(args) not in (1, 3):
-        print(
+        timestamped_print(
             "usage: okam-amd64-connect ignored-library "
             "[--authenticate|--stream-test|--stream-stdout] "
             "[--credential-index N]",
@@ -359,7 +361,7 @@ def main() -> int:
         service = _read_field()
         password = _read_field(allow_empty=True) if modes[option] != "connect" else None
         if password is not None and _debug_credentials_enabled():
-            print(_credential_debug_line("ipc_read", password, uid), file=sys.stderr, flush=True)
+            timestamped_print(_credential_debug_line("ipc_read", password, uid), file=sys.stderr, flush=True)
         code, result = run(
             modes[option], uid, service, password, credential_index=credential_index
         )

@@ -12,6 +12,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 from .p2p import MAX_RESPONSE_BYTES, P2PError, _jpeg_dimensions
+from .logging import PROCESS_ID
 
 
 StreamStarter = Callable[[], subprocess.Popen[bytes]]
@@ -91,6 +92,8 @@ class NativeStreamSession:
         self.idle_timeout = idle_timeout
         self._lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None
+        self._cleanup_complete = threading.Event()
+        self._cleanup_complete.set()
         self._subscribers: dict[str, tuple[queue.Queue[bytes | object], bool]] = {}
         self._idle_timer: threading.Timer | None = None
         self._stderr = bytearray()
@@ -122,42 +125,54 @@ class NativeStreamSession:
     def acquire(self, *, passive: bool = False, reason: str = "active") -> StreamSubscription:
         wait_begin = time.monotonic()
         self._diagnostic("session_lock_wait_begin", reason=reason, passive=passive)
-        with self._lock:
-            lock_acquired = time.monotonic()
-            self._diagnostic(
-                "session_lock_acquired",
-                reason=reason,
-                passive=passive,
-                session_lock_wait_ms=round((lock_acquired - wait_begin) * 1000, 1),
-            )
-            if self._closed:
-                raise P2PError("native stream session is closed")
-            if self._idle_timer is not None:
-                self._idle_timer.cancel()
-                self._idle_timer = None
-            if not passive and (self._process is None or self._process.poll() is not None):
-                start_begin = time.monotonic()
-                self._diagnostic("session_start_begin", reason=reason)
-                self._start_locked(reason)
+        while True:
+            cleanup_wait: threading.Event | None = None
+            with self._lock:
+                lock_acquired = time.monotonic()
                 self._diagnostic(
-                    "session_start_complete",
+                    "session_lock_acquired",
                     reason=reason,
-                    session_lock_hold_ms=round((time.monotonic() - lock_acquired) * 1000, 1),
-                    session_start_elapsed_ms=round((time.monotonic() - start_begin) * 1000, 1),
+                    passive=passive,
+                    session_lock_wait_ms=round((lock_acquired - wait_begin) * 1000, 1),
                 )
-            subscription_id = uuid.uuid4().hex
-            chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
-            # Start the viewer on a decodable boundary. Without this it waits
-            # for the camera's next keyframe, which is the whole open latency.
-            preamble = self._preamble()
-            if preamble:
-                chunks.put_nowait(preamble)
-            self._subscribers[subscription_id] = (chunks, passive)
-            if passive and self._process is None:
-                self._set_state_locked("STANDBY")
-                self._put_chunk(chunks, self._standby_frame)
-                self._ensure_standby_thread_locked()
-            return StreamSubscription(self, subscription_id, chunks)
+                if self._closed:
+                    raise P2PError("native stream session is closed")
+                process = self._process
+                if process is not None and process.poll() is not None:
+                    # The helper has exited, but its pump still owns the
+                    # final disconnect/standby cleanup. Never overlap the
+                    # next native generation with that teardown.
+                    cleanup_wait = self._cleanup_complete
+                else:
+                    if self._idle_timer is not None:
+                        self._idle_timer.cancel()
+                        self._idle_timer = None
+                    if not passive and process is None:
+                        start_begin = time.monotonic()
+                        self._diagnostic("session_start_begin", reason=reason)
+                        self._start_locked(reason)
+                        self._diagnostic(
+                            "session_start_complete",
+                            reason=reason,
+                            session_lock_hold_ms=round((time.monotonic() - lock_acquired) * 1000, 1),
+                            session_start_elapsed_ms=round((time.monotonic() - start_begin) * 1000, 1),
+                        )
+                    subscription_id = uuid.uuid4().hex
+                    chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
+                    # Start the viewer on a decodable boundary. Without this it waits
+                    # for the camera's next keyframe, which is the whole open latency.
+                    preamble = self._preamble()
+                    if preamble:
+                        chunks.put_nowait(preamble)
+                    self._subscribers[subscription_id] = (chunks, passive)
+                    if passive and self._process is None:
+                        self._set_state_locked("STANDBY")
+                        self._put_chunk(chunks, self._standby_frame)
+                        self._ensure_standby_thread_locked()
+                    return StreamSubscription(self, subscription_id, chunks)
+            if cleanup_wait is not None:
+                if not cleanup_wait.wait(timeout=15.0):
+                    raise P2PError("native stream cleanup did not complete")
 
     def release(self, subscription_id: str) -> None:
         with self._lock:
@@ -184,7 +199,7 @@ class NativeStreamSession:
 
     def _emit(self, message: str) -> None:
         if self._logger is not None:
-            self._logger(message)
+            self._logger(f"process_id={PROCESS_ID} {message}")
 
     def diagnostic(self, event: str, **fields: object) -> None:
         """Emit a credential-free diagnostic event for an outer protocol layer."""
@@ -210,6 +225,7 @@ class NativeStreamSession:
             self._diagnostic_events.add(event)
         values = {
             "event": event,
+            "process_id": PROCESS_ID,
             "camera_uid": self._camera_uid or "-",
             "session_id": self._session_id,
             "session_generation": self._session_generation,
@@ -453,6 +469,7 @@ class NativeStreamSession:
             process.wait(timeout=5)
             raise P2PError("native stream helper pipes are unavailable")
         self._process = process
+        self._cleanup_complete.clear()
         self._set_state_locked("CONNECTED")
         self._emit(
             "native_session_process "
@@ -534,6 +551,7 @@ class NativeStreamSession:
             with self._lock:
                 if self._subscribers:
                     self._ensure_standby_thread_locked()
+            self._cleanup_complete.set()
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         assert process.stderr is not None
