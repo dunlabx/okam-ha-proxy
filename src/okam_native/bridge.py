@@ -185,26 +185,26 @@ class BridgeRegistry:
 
 
 StatusProvider = Callable[[], dict[str, object]]
-BridgeProvider = Callable[[], CameraBridge | None] | BridgeRegistry
+BridgeProvider = Callable[[], CameraBridge | BridgeRegistry | None] | BridgeRegistry
 
 
 def _all_bridges(provider: BridgeProvider) -> tuple[CameraBridge, ...]:
-    if isinstance(provider, BridgeRegistry):
-        return provider.values()
-    bridge = provider()
-    return (bridge,) if bridge is not None else ()
+    value = provider if isinstance(provider, BridgeRegistry) else provider()
+    if isinstance(value, BridgeRegistry):
+        return value.values()
+    return (value,) if isinstance(value, CameraBridge) else ()
 
 
 def _bridge_for(provider: BridgeProvider, identifier: str | None = None) -> CameraBridge | None:
-    if isinstance(provider, BridgeRegistry):
+    value = provider if isinstance(provider, BridgeRegistry) else provider()
+    if isinstance(value, BridgeRegistry):
         if identifier is None:
-            bridges = provider.values()
+            bridges = value.values()
             return bridges[0] if bridges else None
-        return provider.get(identifier)
-    bridge = provider()
-    if bridge is None or identifier is None:
-        return bridge
-    return bridge if identifier in (bridge.camera_id, bridge.camera_uid) else None
+        return value.get(identifier)
+    if value is None or identifier is None:
+        return value if isinstance(value, CameraBridge) else None
+    return value if identifier in (value.camera_id, value.camera_uid) else None
 
 
 def make_handler(

@@ -238,9 +238,8 @@ delay** from `30` to `120`. The change is applied immediately.
 - Update the **integration** from HACS.
 - Restart Home Assistant after an integration update.
 
-The app and HACS integration are versioned independently. The current HACS
-connectivity fix is version `1.2.15`; the already-installed add-on `1.2.14`
-does not need a container update.
+The current app and HACS integration release is `1.2.15`. Update the add-on
+and integration together for the HTTP API authentication fix.
 
 ## Diagnostics
 

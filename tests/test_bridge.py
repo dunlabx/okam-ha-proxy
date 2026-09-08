@@ -4,7 +4,7 @@ import threading
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from okam_native.bridge import CameraBridge, QuietThreadingHTTPServer, make_handler
+from okam_native.bridge import BridgeRegistry, CameraBridge, QuietThreadingHTTPServer, make_handler
 from okam_native.session import SessionStatus
 
 
@@ -37,10 +37,20 @@ class FakeSession:
         return self.subscription
 
 
-def request(server, method: str, path: str, *, token: str | None = None, body=None):
+def request(
+    server,
+    method: str,
+    path: str,
+    *,
+    token: str | None = None,
+    authorization: str | None = None,
+    body=None,
+):
     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=3)
     headers = {}
-    if token is not None:
+    if authorization is not None:
+        headers["Authorization"] = authorization
+    elif token is not None:
         headers["Authorization"] = f"Bearer {token}"
     encoded = None
     if body is not None:
@@ -143,18 +153,22 @@ def test_devices_endpoint_lists_each_enabled_camera_without_credentials() -> Non
         session=FakeSession(),  # type: ignore[arg-type]
         ffmpeg="ffmpeg",
     )
-    from okam_native.bridge import BridgeRegistry
-
     registry = BridgeRegistry()
     registry.add(first)
     registry.add(second)
     server = ThreadingHTTPServer(
-        ("127.0.0.1", 0), make_handler(lambda: {}, registry)
+        ("127.0.0.1", 0), make_handler(lambda: {}, lambda: registry)
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        assert request(server, "GET", "/api/devices")[0] == 401
+        for authorization in (None, "Bearer wrong-token", "Basic shared-token-123", "Bearer"):
+            code, content_type, payload = request(
+                server, "GET", "/api/devices", authorization=authorization
+            )
+            assert code == 401
+            assert content_type == "application/json"
+            assert json.loads(payload) == {"error": "unauthorized"}
         code, _content_type, payload = request(
             server, "GET", "/api/devices", token="shared-token-123"
         )

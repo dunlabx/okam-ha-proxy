@@ -72,7 +72,7 @@ def test_real_bridge_server_and_hacs_client_resolve_alias_without_camera_activat
         "configuration_required": False,
     }
     server = QuietThreadingHTTPServer(
-        ("127.0.0.1", 0), make_handler(lambda: status, registry)
+        ("127.0.0.1", 0), make_handler(lambda: status, lambda: registry)
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

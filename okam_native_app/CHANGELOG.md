@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.15
+
+- Fixes HTTP API authentication when the production handler receives the
+  add-on's multi-camera bridge registry.
+
 ## 1.2.14
 
 - Emits full safe diagnostics for unexpected bridge server exceptions.
