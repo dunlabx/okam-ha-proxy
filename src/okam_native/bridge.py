@@ -60,9 +60,13 @@ class QuietThreadingHTTPServer(ThreadingHTTPServer):
         error = sys.exc_info()[1]
         if isinstance(error, _EXPECTED_DISCONNECTS):
             return
-        # Type only: the peer address is never logged.
+        message = _redact_diagnostic_text(str(error)) or "<empty>"
+        stack = _redact_diagnostic_text(traceback.format_exc())
         print(
-            f"bridge_request_failed error={type(error).__name__}",
+            "bridge_request_failed "
+            f"error={type(error).__name__} message={message} "
+            "method=UNKNOWN path=- camera_uid=- operation=server.handle_error "
+            f"traceback={stack}",
             file=sys.stderr,
             flush=True,
         )

@@ -246,8 +246,10 @@ def test_dropped_clients_do_not_report_a_crash(capsys) -> None:
         server.handle_error(object(), peer)
     captured = capsys.readouterr().err
     assert "bridge_request_failed error=ValueError" in captured
+    assert "message=a real fault" in captured
+    assert "method=UNKNOWN path=- camera_uid=- operation=server.handle_error" in captured
     assert "172.30.32.2" not in captured
-    assert "Traceback" not in captured
+    assert "traceback=" in captured
 
 
 def test_unexpected_request_exception_logs_safe_production_context(capsys) -> None:
