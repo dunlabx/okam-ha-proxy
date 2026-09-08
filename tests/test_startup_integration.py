@@ -255,11 +255,11 @@ def test_production_startup_never_runs_camera_diagnostics(entrypoint, monkeypatc
 
 def test_build_fingerprint_reports_runtime_identity(entrypoint, monkeypatch, capsys):
     app, _options, _logs = entrypoint
-    monkeypatch.setenv("OKAM_BUILD_VERSION", "1.2.13")
+    monkeypatch.setenv("OKAM_BUILD_VERSION", "1.2.14")
     monkeypatch.setenv("OKAM_BUILD_COMMIT", "commit-under-test")
     app.log_build_fingerprint()
     output = capsys.readouterr().out
-    assert "build_fingerprint build_version=1.2.13 build_commit=commit-under-test" in output
+    assert "build_fingerprint build_version=1.2.14 build_commit=commit-under-test" in output
     assert "architecture=" in output
     assert "runtime_module bridge=" in output
     assert "session=" in output and "auth=" in output

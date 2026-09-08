@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.14
+
+- Emits full safe diagnostics for unexpected bridge server exceptions.
+
 ## 1.2.13
 
 - Prevents persisted diagnostic switches from authenticating cameras during startup.
