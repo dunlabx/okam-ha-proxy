@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Connect to O-KAM Native Bridge",
-        "description": "Use the local URL and API token configured in the O-KAM Native Bridge app.",
+        "description": "Use the internal Home Assistant URL http://dc28dd67-okam-ha-proxy:8099 (or the host IP with port 8099) and the API token configured in the O-KAM Native Bridge app.",
         "data": {
           "bridge_url": "Native bridge",
           "api_token": "API token",
@@ -50,7 +50,8 @@
       "cannot_connect": "Cannot connect to the native bridge",
       "invalid_auth": "The API token is incorrect",
       "camera_not_found": "The configured camera UID or alias was not found",
-      "camera_ambiguous": "The configured camera alias matches multiple cameras"
+      "camera_ambiguous": "The configured camera alias matches multiple cameras",
+      "invalid_response": "The native bridge returned an invalid response"
     },
     "abort": {
       "already_configured": "This bridge is already configured"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -9,7 +10,13 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import OkamApi, OkamApiError, OkamAuthError
+from .api import (
+    OkamApi,
+    OkamApiError,
+    OkamAuthError,
+    OkamInvalidResponseError,
+    normalize_bridge_url,
+)
 from .const import (
     CONF_API_TOKEN,
     CONF_BRIDGE_URL,
@@ -22,6 +29,9 @@ from .const import (
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
 )
+
+_LOGGER = logging.getLogger(__name__)
+DEFAULT_BRIDGE_URL = "http://dc28dd67-okam-ha-proxy:8099"
 from .identity import (
     CameraSelectionRequired,
     CameraAliasAmbiguous,
@@ -37,7 +47,7 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
         {
             vol.Required(
                 CONF_BRIDGE_URL,
-                default=defaults.get(CONF_BRIDGE_URL, "http://homeassistant.local:8099"),
+                default=defaults.get(CONF_BRIDGE_URL, DEFAULT_BRIDGE_URL),
             ): str,
             vol.Required(
                 CONF_API_TOKEN, default=defaults.get(CONF_API_TOKEN, "")
@@ -116,6 +126,8 @@ _validated_from_devices = validated_from_devices
 def _prepare_data(data: dict[str, Any]) -> dict[str, Any]:
     """Drop obsolete HACS credential fields before validation or storage."""
     result = dict(data)
+    if CONF_BRIDGE_URL in result:
+        result[CONF_BRIDGE_URL] = normalize_bridge_url(result[CONF_BRIDGE_URL])
     for key in ("auth_method", "camera_password", "password"):
         result.pop(key, None)
     return result
@@ -174,6 +186,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await _discover(self.hass, prepared)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
+            except OkamInvalidResponseError:
+                errors["base"] = "invalid_response"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
             except CameraAliasAmbiguous:
@@ -211,6 +225,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "camera_not_found"
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
+            except OkamInvalidResponseError:
+                errors["base"] = "invalid_response"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
             except ValueError:
@@ -232,6 +248,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 devices = await _discover(self.hass, prepared)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
+            except OkamInvalidResponseError:
+                errors["base"] = "invalid_response"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
             except CameraAliasAmbiguous:
@@ -274,6 +292,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "camera_not_found"
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
+            except OkamInvalidResponseError:
+                errors["base"] = "invalid_response"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
             except ValueError:
@@ -305,6 +325,8 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "camera_not_found"
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
+            except OkamInvalidResponseError:
+                errors["base"] = "invalid_response"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
             except ValueError:

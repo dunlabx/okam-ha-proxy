@@ -45,10 +45,13 @@ def validated_from_devices(data: dict[str, Any], devices: list[dict[str, Any]]) 
         raise ValueError("camera_not_found")
     reference = data.get("camera_uid") or data.get("camera_id")
     selected = None
-    if isinstance(reference, str) and reference.strip():
+    has_reference = isinstance(reference, str) and bool(reference.strip())
+    if has_reference:
         selected = resolve_reference(devices, reference)
     elif len(devices) == 1:
         selected = devices[0]
+    if has_reference and selected is None:
+        raise ValueError("camera_not_found")
     if selected is None:
         raise CameraSelectionRequired(devices)
     uid = camera_uid(selected)

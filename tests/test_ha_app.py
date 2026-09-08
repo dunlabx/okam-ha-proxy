@@ -75,6 +75,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
+    assert config["version"] == "1.2.14"
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["startup"] == "application"
     assert config["boot"] == "auto"
@@ -120,7 +121,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.14"
+    assert manifest["version"] == "1.2.15"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -190,8 +191,8 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.14"' in manifest
-    assert "http://homeassistant.local:8099" in config_flow
+    assert '"version": "1.2.15"' in manifest
+    assert "http://dc28dd67-okam-ha-proxy:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera
     assert "SLEEPING_PLACEHOLDER" in camera

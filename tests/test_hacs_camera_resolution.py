@@ -48,13 +48,18 @@ def test_alias_rename_does_not_change_stored_uid():
 
 
 def test_unknown_reference_and_ambiguous_alias_are_rejected():
-    with pytest.raises(CameraSelectionRequired):
+    with pytest.raises(ValueError, match="camera_not_found"):
         validated_from_devices({"camera_id": "missing"}, _devices())
     with pytest.raises(CameraAliasAmbiguous):
         resolve_reference([
             {"uid": "A", "alias": "same"},
             {"uid": "B", "alias": "SAME"},
         ], "same")
+
+
+def test_blank_reference_still_requests_selection_for_multiple_cameras():
+    with pytest.raises(CameraSelectionRequired):
+        validated_from_devices({"camera_id": ""}, _devices())
 
 
 def test_exact_uid_wins_over_alias_collision():
