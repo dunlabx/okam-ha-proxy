@@ -11,6 +11,18 @@ configuration:
   cameras:
     name: Cameras
     description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias and an optional password. Leave password empty for automatic authentication.
+    fields:
+      uid:
+        name: Camera UID
+      alias:
+        name: Alias
+      auth_method:
+        name: Authentication method
+        options:
+          automatic: Automatic
+          password: Password
+      password:
+        name: Camera password
   api_port:
     name: API port
     description: Local HTTP API port. The default is 8099.

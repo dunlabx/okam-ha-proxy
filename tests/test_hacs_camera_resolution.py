@@ -6,6 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
+
 _spec = importlib.util.spec_from_file_location(
     "okam_identity", Path(__file__).parents[1] / "custom_components/okam/identity.py"
 )
@@ -14,6 +15,7 @@ _identity = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_identity)
 
 CameraSelectionRequired = _identity.CameraSelectionRequired
+CameraAliasAmbiguous = _identity.CameraAliasAmbiguous
 resolve_reference = _identity.resolve_reference
 validated_from_devices = _identity.validated_from_devices
 
@@ -48,7 +50,7 @@ def test_alias_rename_does_not_change_stored_uid():
 def test_unknown_reference_and_ambiguous_alias_are_rejected():
     with pytest.raises(CameraSelectionRequired):
         validated_from_devices({"camera_id": "missing"}, _devices())
-    with pytest.raises(CameraSelectionRequired):
+    with pytest.raises(CameraAliasAmbiguous):
         resolve_reference([
             {"uid": "A", "alias": "same"},
             {"uid": "B", "alias": "SAME"},

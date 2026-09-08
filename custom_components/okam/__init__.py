@@ -34,6 +34,7 @@ OkamConfigEntry = ConfigEntry[OkamRuntime]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: OkamConfigEntry) -> bool:
+    _migrate_legacy_hacs_credentials(hass, entry)
     api = OkamApi(
         async_get_clientsession(hass),
         entry.data[CONF_BRIDGE_URL],
@@ -53,6 +54,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: OkamConfigEntry) -> bool
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
+
+
+def _migrate_legacy_hacs_credentials(hass: HomeAssistant, entry: OkamConfigEntry) -> None:
+    """Remove credentials from entries created by older HACS config flows."""
+    obsolete = {"auth_method", "camera_password", "password"}
+    data = {key: value for key, value in entry.data.items() if key not in obsolete}
+    options = {
+        key: value for key, value in entry.options.items() if key not in obsolete
+    }
+    if data != dict(entry.data) or options != dict(entry.options):
+        hass.config_entries.async_update_entry(entry, data=data, options=options)
 
 
 async def _resolve_camera_uid(

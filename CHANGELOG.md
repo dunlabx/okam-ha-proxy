@@ -1,10 +1,16 @@
 # Changelog
 
+## 1.2.11
+
+- Renders camera authentication method as a Supervisor add-on dropdown.
+- Keeps camera credentials in the add-on and reduces HACS setup to bridge
+  connection and UID-or-alias selection.
+
 ## 1.2.10
 
 - Keeps RTSP consumers on a passive standby H.264 frame until an active live
   viewer starts the shared native camera session.
-- Uses an explicit Home Assistant dropdown for the HACS authentication method.
+- Keeps the shared native session available to passive RTSP consumers.
 
 ## 1.2.9
 

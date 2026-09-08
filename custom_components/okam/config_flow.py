@@ -12,21 +12,19 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from .api import OkamApi, OkamApiError, OkamAuthError
 from .const import (
     CONF_API_TOKEN,
-    CONF_AUTH_METHOD,
     CONF_BRIDGE_URL,
-    CONF_CAMERA_PASSWORD,
     CONF_CAMERA_ID,
     CONF_CAMERA_UID,
     CONF_IDLE_TIMEOUT,
     CONF_SNAPSHOT_INTERVAL,
     DEFAULT_CAMERA_ID,
-    DEFAULT_AUTH_METHOD,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_SNAPSHOT_INTERVAL,
     DOMAIN,
 )
 from .identity import (
     CameraSelectionRequired,
+    CameraAliasAmbiguous,
     camera_uid,
     resolve_reference,
     validated_from_devices,
@@ -43,25 +41,6 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
             ): str,
             vol.Required(
                 CONF_API_TOKEN, default=defaults.get(CONF_API_TOKEN, "")
-            ): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-            ),
-            vol.Required(
-                CONF_AUTH_METHOD,
-                default=defaults.get(CONF_AUTH_METHOD, DEFAULT_AUTH_METHOD),
-            ): selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=[
-                        {"value": "automatic", "label": "Automatic"},
-                        {"value": "password", "label": "Password"},
-                    ],
-                    translation_key="auth_method",
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                )
-            ),
-            vol.Optional(
-                CONF_CAMERA_PASSWORD,
-                default=defaults.get(CONF_CAMERA_PASSWORD, ""),
             ): selector.TextSelector(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
             ),
@@ -134,16 +113,11 @@ _resolve_reference = resolve_reference
 _validated_from_devices = validated_from_devices
 
 
-def _prepare_auth(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the HACS auth selector while retaining legacy entries."""
+def _prepare_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Drop obsolete HACS credential fields before validation or storage."""
     result = dict(data)
-    method = result.get(CONF_AUTH_METHOD, DEFAULT_AUTH_METHOD)
-    if not isinstance(method, str) or method not in {"automatic", "password"}:
-        raise ValueError("invalid_auth_method")
-    result[CONF_AUTH_METHOD] = method
-    if method == "automatic":
-        # Automatic mode must never accidentally carry a manual credential.
-        result.pop(CONF_CAMERA_PASSWORD, None)
+    for key in ("auth_method", "camera_password", "password"):
+        result.pop(key, None)
     return result
 
 
@@ -196,23 +170,23 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                prepared = _prepare_auth(user_input)
+                prepared = _prepare_data(user_input)
                 devices = await _discover(self.hass, prepared)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
-            except ValueError as exc:
-                errors["base"] = (
-                    "invalid_auth_method"
-                    if str(exc) == "invalid_auth_method"
-                    else "camera_not_found"
-                )
+            except CameraAliasAmbiguous:
+                errors["base"] = "camera_ambiguous"
+            except ValueError:
+                errors["base"] = "camera_not_found"
             else:
                 try:
                     return await self._create_camera_entry(
                         _validated_from_devices(prepared, devices)
                     )
+                except CameraAliasAmbiguous:
+                    errors["base"] = "camera_ambiguous"
                 except CameraSelectionRequired:
                     self._pending_data = dict(prepared)
                     self._pending_devices = devices
@@ -228,9 +202,11 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_camera(self, user_input=None):
         errors: dict[str, str] = {}
         if user_input is not None:
-            data = _prepare_auth({**self._pending_data, **user_input})
+            data = _prepare_data({**self._pending_data, **user_input})
             try:
                 validated = await _validate(self.hass, data)
+            except CameraAliasAmbiguous:
+                errors["base"] = "camera_ambiguous"
             except CameraSelectionRequired:
                 errors["base"] = "camera_not_found"
             except OkamAuthError:
@@ -252,24 +228,28 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                prepared = _prepare_auth(user_input)
+                prepared = _prepare_data(user_input)
                 devices = await _discover(self.hass, prepared)
             except OkamAuthError:
                 errors["base"] = "invalid_auth"
             except OkamApiError:
                 errors["base"] = "cannot_connect"
-            except ValueError as exc:
-                errors["base"] = (
-                    "invalid_auth_method"
-                    if str(exc) == "invalid_auth_method"
-                    else "camera_not_found"
-                )
+            except CameraAliasAmbiguous:
+                errors["base"] = "camera_ambiguous"
+            except ValueError:
+                errors["base"] = "camera_not_found"
             else:
                 self._pending_entry = entry
                 self._pending_data = dict(prepared)
                 self._pending_devices = devices
                 try:
                     validated = _validated_from_devices(prepared, devices)
+                except CameraAliasAmbiguous:
+                    return self.async_show_form(
+                        step_id="reconfigure_camera",
+                        data_schema=_camera_selector(devices),
+                        errors={"base": "camera_ambiguous"},
+                    )
                 except CameraSelectionRequired:
                     return self.async_show_form(
                         step_id="reconfigure_camera",
@@ -285,9 +265,11 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         entry = self._pending_entry
         errors: dict[str, str] = {}
         if user_input is not None:
-            data = _prepare_auth({**self._pending_data, **user_input})
+            data = _prepare_data({**self._pending_data, **user_input})
             try:
                 validated = await _validate(self.hass, data)
+            except CameraAliasAmbiguous:
+                errors["base"] = "camera_ambiguous"
             except CameraSelectionRequired:
                 errors["base"] = "camera_not_found"
             except OkamAuthError:
@@ -314,9 +296,11 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         assert self._reauth_entry is not None
         if user_input is not None:
-            data = _prepare_auth({**self._reauth_entry.data, **user_input})
+            data = _prepare_data({**self._reauth_entry.data, **user_input})
             try:
                 validated = await _validate(self.hass, data)
+            except CameraAliasAmbiguous:
+                errors["base"] = "camera_ambiguous"
             except CameraSelectionRequired:
                 errors["base"] = "camera_not_found"
             except OkamAuthError:

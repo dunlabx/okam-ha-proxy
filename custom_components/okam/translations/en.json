@@ -1,24 +1,14 @@
 {
   "title": "O-KAM Native Bridge",
-  "selector": {
-    "auth_method": {
-      "options": {
-        "automatic": "Automatic",
-        "password": "Password"
-      }
-    }
-  },
   "config": {
     "step": {
       "user": {
         "title": "Connect to O-KAM Native Bridge",
         "description": "Use the local URL and API token configured in the O-KAM Native Bridge app.",
         "data": {
-          "bridge_url": "Bridge URL",
+          "bridge_url": "Native bridge",
           "api_token": "API token",
-          "auth_method": "Authentication method",
-          "camera_password": "Camera password",
-          "camera_id": "Camera UID or alias",
+          "camera_id": "UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }
@@ -26,25 +16,28 @@
       "reconfigure": {
         "title": "Reconfigure O-KAM Native Bridge",
         "data": {
-          "bridge_url": "Bridge URL",
+          "bridge_url": "Native bridge",
           "api_token": "API token",
-          "auth_method": "Authentication method",
-          "camera_password": "Camera password",
-          "camera_id": "Camera UID or alias",
+          "camera_id": "UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
         }
       },
       "reauth_confirm": {
         "title": "Update API token",
-        "data": {"api_token": "API token"}
+        "data": {
+          "api_token": "API token"
+        }
       }
     },
     "error": {
       "cannot_connect": "Cannot connect to the native bridge",
       "invalid_auth": "The API token is incorrect",
-      "camera_not_found": "The configured camera ID was not found"
+      "camera_not_found": "The configured camera UID or alias was not found",
+      "camera_ambiguous": "The configured camera alias matches multiple cameras"
     },
-    "abort": {"already_configured": "This bridge is already configured"}
+    "abort": {
+      "already_configured": "This bridge is already configured"
+    }
   }
 }

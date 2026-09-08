@@ -11,6 +11,10 @@ class CameraSelectionRequired(ValueError):
         self.devices = devices
 
 
+class CameraAliasAmbiguous(ValueError):
+    """The supplied alias identifies more than one bridge camera."""
+
+
 def camera_uid(item: dict[str, Any]) -> str:
     value = item.get("uid") or item.get("camera_uid") or item.get("camera_id")
     return value.strip() if isinstance(value, str) else ""
@@ -32,7 +36,7 @@ def resolve_reference(devices: list[dict[str, Any]], reference: str) -> dict[str
         and item["alias"].strip().casefold() == normalized
     ]
     if len(alias_matches) > 1:
-        raise CameraSelectionRequired(devices)
+        raise CameraAliasAmbiguous("camera_alias_ambiguous")
     return alias_matches[0] if alias_matches else None
 
 

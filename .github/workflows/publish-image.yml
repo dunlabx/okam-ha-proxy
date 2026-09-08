@@ -55,6 +55,14 @@ jobs:
           for path in [Path("hacs.json"), Path("custom_components/okam/manifest.json")]:
               value = json.loads(path.read_text())
               assert isinstance(value, dict), path
+          addon = yaml.safe_load(Path("okam_native_app/config.yaml").read_text())
+          camera_schema = addon["schema"]["cameras"][0]
+          assert camera_schema["auth_method"] == "list(automatic|password)"
+          flow = Path("custom_components/okam/config_flow.py").read_text()
+          strings = Path("custom_components/okam/strings.json").read_text()
+          assert '"camera_id": "UID or alias"' in strings
+          assert "CONF_AUTH_METHOD" not in flow and "CONF_CAMERA_PASSWORD" not in flow
+          assert '"auth_method"' not in strings and '"camera_password"' not in strings
           PY
       - run: git diff --check
 

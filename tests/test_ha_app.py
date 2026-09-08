@@ -39,6 +39,12 @@ def _assert_supervisor_schema_element(value: object, path: str) -> None:
         raise AssertionError(f"{path} has unsupported schema value {value!r}")
 
 
+def _enum_values(value: object) -> set[str]:
+    """Extract and validate the Supervisor ``list(a|b)`` enum grammar."""
+    assert isinstance(value, str) and value.startswith("list(") and value.endswith(")")
+    return set(value[5:-1].split("|"))
+
+
 def _load_addon_config(relative_path: str) -> dict[str, object]:
     value = yaml.safe_load((ROOT / relative_path).read_text(encoding="utf-8"))
     assert isinstance(value, dict)
@@ -82,7 +88,8 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(schema, dict)
     assert set(options) <= set(schema)
     assert options["cameras"] == []
-    assert schema["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "match(automatic|password)"}]
+    assert schema["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)"}]
+    assert _enum_values(schema["cameras"][0]["auth_method"]) == {"automatic", "password"}
     for key, value in schema.items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
@@ -91,7 +98,7 @@ def test_test_addon_config_matches_supervisor_schema_expectations() -> None:
     config = _load_addon_config("okam_native_app/test-addon/config.yaml")
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert config["options"]["cameras"] == []
-    assert config["schema"]["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "match(automatic|password)"}]
+    assert config["schema"]["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)"}]
     for key, value in config["schema"].items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
@@ -113,7 +120,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.10"
+    assert manifest["version"] == "1.2.11"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -183,7 +190,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.10"' in manifest
+    assert '"version": "1.2.11"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera
@@ -197,13 +204,11 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
         in camera
     )
     assert "CONF_CAMERA_UID" in config_flow
-    assert "SelectSelector" in config_flow
-    assert '"value": "automatic", "label": "Automatic"' in config_flow
-    assert '"value": "password", "label": "Password"' in config_flow
-    assert "SelectSelectorMode.DROPDOWN" in config_flow
-    assert "CONF_CAMERA_PASSWORD" in config_flow
-    assert "Camera password" in strings
-    assert "camera_uid" in strings
+    assert "CONF_AUTH_METHOD" not in config_flow
+    assert "CONF_CAMERA_PASSWORD" not in config_flow
+    assert '"auth_method"' not in strings
+    assert '"camera_password"' not in strings
+    assert '"camera_id": "UID or alias"' in strings
     assert "async_update_entry" in integration_init
     assert "type OkamConfigEntry =" not in integration_init
     assert "async_step_camera" in config_flow
