@@ -129,7 +129,7 @@ jobs:
           file: ./okam_native_app/Dockerfile
           platforms: ${{ matrix.platform }}
           target: final
-          outputs: type=oci,dest=/tmp/okam-${{ matrix.arch }}.tar
+          outputs: type=local,dest=/tmp/okam-rootfs-${{ matrix.arch }}
           build-args: |
             BUILD_VERSION=prebuild-${{ github.sha }}
             BUILD_ARCH=${{ matrix.ha_arch }}
@@ -138,36 +138,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - "/tmp/okam-${{ matrix.arch }}.tar" <<'PY'
-          import gzip, io, json, sys, tarfile
-          with tarfile.open(sys.argv[1]) as image:
-              descriptor = None
-              for member in image.getmembers():
-                  if not member.name.startswith("blobs/"):
-                      continue
-                  try:
-                      value = json.loads(image.extractfile(member).read())
-                  except (UnicodeDecodeError, json.JSONDecodeError, OSError):
-                      continue
-                  if "layers" in value:
-                      descriptor = value
-                      break
-              assert descriptor is not None, "OCI image manifest not found"
-              names = set()
-              texts = []
-              for layer in descriptor["layers"]:
-                  blob_name = "blobs/" + layer["digest"].replace(":", "/")
-                  blob = image.extractfile(blob_name).read()
-                  with tarfile.open(fileobj=gzip.GzipFile(fileobj=io.BytesIO(blob))) as layer_tar:
-                      for member in layer_tar:
-                          names.add(member.name)
-                          if member.isfile() and member.name in {"opt/okam/app_entrypoint.py", "opt/okam/okam_native/auth.py", "opt/okam/okam_native/account.py"}:
-                              texts.append(layer_tar.extractfile(member).read().decode(errors="replace"))
-          assert {"opt/okam/app_entrypoint.py", "opt/okam/okam_native/auth.py", "opt/okam/okam_native/account.py"} <= names
-          source = "\n".join(texts)
-          for marker in ("camera_auth_attempt", "configured_camera_selections", "open_authenticated_stream_process"):
-              assert marker in source, marker
-          PY
+          rootfs="/tmp/okam-rootfs-${{ matrix.arch }}"
+          test -f "$rootfs/opt/okam/app_entrypoint.py"
+          test -f "$rootfs/opt/okam/okam_native/auth.py"
+          test -f "$rootfs/opt/okam/okam_native/account.py"
+          grep -q 'camera_auth_attempt' "$rootfs/opt/okam/okam_native/auth.py"
+          grep -q 'configured_camera_selections' "$rootfs/opt/okam/okam_native/account.py"
+          grep -q 'open_authenticated_stream_process' "$rootfs/opt/okam/app_entrypoint.py"
 
   prepare:
     runs-on: ubuntu-latest
