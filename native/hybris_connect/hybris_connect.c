@@ -83,11 +83,11 @@ static bool read_exact(void *buffer, size_t size) {
     return true;
 }
 
-static char *read_field(void) {
+static char *read_field(bool allow_empty) {
     uint32_t network_size;
     if (!read_exact(&network_size, sizeof(network_size))) return NULL;
     uint32_t size = ntohl(network_size);
-    if (size == 0 || size > MAX_FIELD_BYTES) return NULL;
+    if ((!allow_empty && size == 0) || size > MAX_FIELD_BYTES) return NULL;
     char *value = calloc((size_t)size + 1, 1);
     if (value == NULL || !read_exact(value, size)) {
         free(value);
@@ -318,9 +318,9 @@ int main(int argc, char **argv) {
               "[--credential-index N]\n", stderr);
         return 2;
     }
-    char *uid = read_field();
-    char *service_parameter = read_field();
-    char *device_password = authenticate ? read_field() : NULL;
+    char *uid = read_field(false);
+    char *service_parameter = read_field(false);
+    char *device_password = authenticate ? read_field(true) : NULL;
     if (uid == NULL || service_parameter == NULL ||
         (authenticate && device_password == NULL) || !initialize_stack_guard()) {
         free(uid);
@@ -405,6 +405,11 @@ int main(int argc, char **argv) {
         state = client_connect(client, CONNECT_TYPE_NORMAL, service_parameter, 0);
         connected = state == CONNECT_STATE_ONLINE;
         if (connected && authenticate) {
+            fprintf(stderr,
+                    "native_login_input username_present=true password_present=true "
+                    "password_length=%zu\n",
+                    strlen(device_password));
+            fflush(stderr);
             login_sent = client_login(client, "admin", device_password);
             if (login_sent) {
                 login_response_received = await_login_response(

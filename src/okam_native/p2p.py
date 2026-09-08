@@ -106,11 +106,25 @@ def resolve_client_id(uid: str, *, opener: OpenRequest = _open_request) -> str:
     return client_id
 
 
-def _field(value: str) -> bytes:
+def _field(value: str, *, allow_empty: bool = False) -> bytes:
     encoded = value.encode("utf-8")
-    if not encoded or len(encoded) > MAX_FIELD_BYTES or any(byte < 0x20 for byte in encoded):
+    if (
+        (not encoded and not allow_empty)
+        or len(encoded) > MAX_FIELD_BYTES
+        or any(byte < 0x20 for byte in encoded)
+    ):
         raise P2PError("native P2P input was invalid")
     return struct.pack(">I", len(encoded)) + encoded
+
+
+def _log_native_login_input(password: str) -> None:
+    """Expose framing presence/length without ever rendering a credential."""
+
+    print(
+        "native_login_input username_present=true password_present=true "
+        f"password_length={len(password)}",
+        flush=True,
+    )
 
 
 def select_camera_password(
@@ -310,7 +324,8 @@ def run_authentication_probe(
 ) -> AuthenticationResult:
     """Connect and prove camera-level login without placing secrets in argv."""
 
-    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    _log_native_login_input(device_password)
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--authenticate"]
         if credential_index is not None:
@@ -374,7 +389,8 @@ def run_stream_probe(
 ) -> StreamProbeResult:
     """Prove bounded H.264 receipt without persisting or returning frame bytes."""
 
-    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    _log_native_login_input(device_password)
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-test"]
         if credential_index is not None:
@@ -492,7 +508,8 @@ def run_snapshot_probe(
 ) -> SnapshotProbeResult:
     """Decode one native H.264 frame to an in-memory JPEG and disconnect."""
 
-    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    _log_native_login_input(device_password)
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     helper_process: subprocess.Popen[bytes] | None = None
     decoder_process: subprocess.Popen[bytes] | None = None
     try:
@@ -611,7 +628,8 @@ def open_stream_process(
 ) -> subprocess.Popen[bytes]:
     """Start the graceful raw-H.264 helper with all sensitive input on stdin."""
 
-    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    _log_native_login_input(device_password)
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-stdout"]
         if credential_index is not None:
@@ -651,7 +669,8 @@ def open_authenticated_stream_process(
 ) -> tuple[subprocess.Popen[bytes], AuthenticationResult]:
     """Start a stream and wait for the helper's pre-media auth handshake."""
 
-    stdin = _field(uid) + _field(service_parameter) + _field(device_password)
+    _log_native_login_input(device_password)
+    stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-stdout", "--credential-index", str(credential_index)]
         process = subprocess.Popen(

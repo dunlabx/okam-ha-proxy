@@ -1,6 +1,8 @@
+import io
 import json
 import struct
 import subprocess
+import sys
 from urllib.parse import urlsplit
 
 import pytest
@@ -20,6 +22,7 @@ from okam_native.p2p import (
     run_stream_probe,
     select_camera_password,
 )
+from okam_native import amd64_helper
 
 
 def test_service_parameter_uses_only_device_family() -> None:
@@ -149,6 +152,52 @@ def test_authentication_probe_passes_all_sensitive_fields_only_on_stdin(monkeypa
     assert b"sensitive-device-password" not in b" ".join(
         value.encode() for value in recorded["command"]
     )
+
+
+def test_empty_password_survives_exact_container_stdin_serialization_and_parser(monkeypatch, capsys) -> None:
+    serialized = {}
+
+    def subprocess_run(command, **kwargs):
+        serialized["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=(
+                b'{"connected":true,"connect_state":3,"login_sent":true,'
+                b'"login_response_received":true,"authenticated":true,'
+                b'"login_command":24577,"login_result":0,"disconnected":true}\n'
+            ),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", subprocess_run)
+    run_authentication_probe(
+        "/helper", "/library", "UID", "service", "", environment={}
+    )
+
+    received = {}
+
+    def helper_run(mode, uid, service, password, **_kwargs):
+        received.update(mode=mode, uid=uid, service=service, password=password)
+        return 0, {"connected": True}
+
+    monkeypatch.setattr(amd64_helper, "run", helper_run)
+    monkeypatch.setattr(sys, "argv", ["helper", "library", "--authenticate"])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.TextIOWrapper(io.BytesIO(serialized["input"]), encoding="utf-8"),
+    )
+    assert amd64_helper.main() == 0
+    assert received == {
+        "mode": "authenticate",
+        "uid": "UID",
+        "service": "service",
+        "password": "",
+    }
+    output = capsys.readouterr().out
+    assert "native_login_input username_present=true password_present=true password_length=0" in output
+    assert "connected" in output  # helper emitted a valid response
 
 
 def test_stream_probe_returns_only_sanitized_metrics(monkeypatch) -> None:

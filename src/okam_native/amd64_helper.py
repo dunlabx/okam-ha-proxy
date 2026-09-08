@@ -36,12 +36,12 @@ def _stop(_signum: int, _frame: object) -> None:
     _running = False
 
 
-def _read_field() -> str:
+def _read_field(*, allow_empty: bool = False) -> str:
     size_bytes = sys.stdin.buffer.read(4)
     if len(size_bytes) != 4:
         raise CS2Error("native P2P input is invalid")
     size = struct.unpack(">I", size_bytes)[0]
-    if not 0 < size <= 4096:
+    if size > 4096 or (size == 0 and not allow_empty):
         raise CS2Error("native P2P input is invalid")
     value = sys.stdin.buffer.read(size)
     if len(value) != size or any(byte < 0x20 for byte in value):
@@ -112,6 +112,14 @@ def run(
     result = _summary()
     accepted_user = "admin"
     accepted_password = device_password or ""
+    if mode != "connect":
+        print(
+            "native_login_input username_present=true "
+            f"password_present={str(device_password is not None).lower()} "
+            f"password_length={len(accepted_password)}",
+            file=sys.stderr,
+            flush=True,
+        )
     try:
         session.connect(timeout=55.0)
         result.update(connected=True, connect_state=3, connect_path=session.connect_path)
@@ -289,7 +297,7 @@ def main() -> int:
     try:
         uid = _read_field()
         service = _read_field()
-        password = _read_field() if modes[option] != "connect" else None
+        password = _read_field(allow_empty=True) if modes[option] != "connect" else None
         code, result = run(
             modes[option], uid, service, password, credential_index=credential_index
         )

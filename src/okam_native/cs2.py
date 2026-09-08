@@ -712,9 +712,10 @@ class CS2Session:
 def make_cgi_request(path: str, user: str, password: str) -> bytes:
     if not path or len(path) > 2048 or any(ord(character) < 0x20 for character in path):
         raise CS2Error("camera CGI path is invalid")
-    for value in (user, password):
-        if len(value) > 512 or any(ord(character) < 0x20 for character in value):
-            raise CS2Error("camera credential is invalid")
+    if not user or len(user) > 512 or any(ord(character) < 0x20 for character in user):
+        raise CS2Error("camera credential is invalid")
+    if len(password) > 512 or any(ord(character) < 0x20 for character in password):
+        raise CS2Error("camera credential is invalid")
     try:
         request = (
             f"GET /{path}loginuse={user}&loginpas={password}"

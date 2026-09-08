@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.6
+
+- Preserves an explicitly empty camera password through Python, amd64, and
+  arm64 native-login framing so the camera can accept it or explicitly reject
+  it before bounded fallback continues.
+
 ## 1.2.5
 
 - Treats an explicitly empty account-device password as the bounded

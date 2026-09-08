@@ -127,6 +127,11 @@ def test_cgi_request_matches_camera_command_framing() -> None:
     )
 
 
+def test_cgi_request_preserves_explicit_empty_password() -> None:
+    request = make_cgi_request("get_status.cgi?name=admin&", "admin", "")
+    assert b"loginuse=admin&loginpas=&" in request
+
+
 def test_command_write_is_one_atomic_drw_payload() -> None:
     writes: list[tuple[int, bytes]] = []
 
