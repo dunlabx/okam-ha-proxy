@@ -120,7 +120,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.11"
+    assert manifest["version"] == "1.2.12"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -190,7 +190,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.11"' in manifest
+    assert '"version": "1.2.12"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera
@@ -317,18 +317,13 @@ def test_test_addon_cannot_collide_with_the_installed_one() -> None:
     assert "boot: manual" in candidate
 
 
-def test_camera_password_is_optional_in_both_addon_schemas() -> None:
-    # The bridge falls back to the enumerated credential when this is empty,
-    # but a schema entry without a trailing "?" is required, so the supervisor
-    # refused to save the options at all. There is no safe placeholder either:
-    # any value here overrides the credential the account hands back.
+def test_obsolete_global_camera_password_is_absent_from_addon_schemas() -> None:
+    # Camera passwords are scoped to each cameras[] entry. Keeping the old
+    # top-level field exposes a misleading Supervisor configuration control.
     for name in ("config.yaml", "test-addon/config.yaml"):
-        config = (ROOT / "okam_native_app" / name).read_text(encoding="utf-8")
-        assert "  camera_password: password?\n" in config, name
-        # An optional option validates when the key is absent. A null default
-        # keeps it present and invalid, which the supervisor reports as the
-        # option being missing.
-        assert "  camera_password: null\n" not in config, name
+        config = yaml.safe_load((ROOT / "okam_native_app" / name).read_text(encoding="utf-8"))
+        assert "camera_password" not in config["schema"], name
+        assert "camera_password" not in config["options"], name
 
 
 def test_watchdog_targets_a_declared_container_port() -> None:

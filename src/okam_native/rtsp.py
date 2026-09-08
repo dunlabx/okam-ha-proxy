@@ -366,7 +366,9 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                 # sleeping battery camera is not woken merely by a DESCRIBE/
                 # PLAY request; an active HTTP live-view subscriber promotes
                 # the shared session to the native stream.
-                self._subscription = bridge.session.acquire(passive=True)
+                self._subscription = bridge.session.acquire(
+                    passive=True, reason="rtsp_passive"
+                )
             except (P2PError, OSError, RuntimeError):
                 self._reply(503, cseq)
                 return True

@@ -31,7 +31,6 @@ options:
 schema:
   account_username: email
   account_password: password
-  camera_password: password?
   api_token: password
   cameras:
     - uid: str

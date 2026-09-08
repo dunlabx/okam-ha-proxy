@@ -229,6 +229,16 @@ def test_production_path_isolates_manual_and_automatic_camera_auth(entrypoint, m
     assert "manual-secret" not in rendered
 
 
+def test_stale_global_camera_password_is_ignored(entrypoint):
+    app, _options, _logs = entrypoint
+    selection = CameraSelection(AccountDevice("CAMERA", "Camera", "account-password"))
+    password, strict = app._camera_password_override(
+        selection, {"camera_password": "stale-global-password", "cameras": []}
+    )
+    assert password is None
+    assert strict is False
+
+
 def test_production_startup_isolates_one_camera_failure(entrypoint, monkeypatch):
     app, options, _logs = entrypoint
     options["run_auth_test"] = True

@@ -81,6 +81,60 @@ def test_session_reuses_process_and_stops_after_last_viewer() -> None:
     assert session.status().clean_disconnect is True
 
 
+def test_simultaneous_active_acquires_share_one_start_operation() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    starts = []
+    process = FakeProcess()
+
+    def start():
+        starts.append(True)
+        entered.set()
+        assert release.wait(2)
+        return process
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    subscriptions = []
+    first = threading.Thread(target=lambda: subscriptions.append(session.acquire()))
+    second = threading.Thread(target=lambda: subscriptions.append(session.acquire()))
+    first.start()
+    assert entered.wait(2)
+    second.start()
+    time.sleep(0.05)
+    assert len(starts) == 1
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert not first.is_alive() and not second.is_alive()
+    assert len(starts) == 1
+    assert session.status().viewers == 2
+    for subscription in subscriptions:
+        subscription.close()
+    session.close()
+
+
+def test_session_lifecycle_logs_identify_camera_and_process_generation() -> None:
+    lines: list[str] = []
+    process = FakeProcess()
+    session = NativeStreamSession(
+        lambda: process,
+        camera_uid="UID_FRONT",
+        transport_uid="transport-front",
+        logger=lines.append,
+    )  # type: ignore[arg-type]
+    subscription = session.acquire(reason="ha_live")
+    subscription.close()
+    session.close()
+    assert any(
+        "native_session_start camera_uid=UID_FRONT transport_uid=transport-front" in line
+        and "session_generation=1" in line
+        and "start_reason=ha_live" in line
+        and "active_consumers=0 passive_consumers=0" in line
+        for line in lines
+    )
+    assert any("native_session_process" in line and "session_generation=1" in line for line in lines)
+
+
 def _unit(kind: int, body: bytes = b"\x00") -> bytes:
     return b"\x00\x00\x01" + bytes([kind]) + body
 

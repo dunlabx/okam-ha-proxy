@@ -40,7 +40,7 @@ idle lifecycle, and Home Assistant custom integration remain shared.
   versioned and `latest` multi-architecture manifests.
 - App and integration metadata are prepared for version `1.2.0`.
 - Missing camera-level credentials are handled by using an explicit
-  `camera_password` override, the enumerated camera credential, or the camera's
+  per-camera password override, the enumerated camera credential, or the camera's
   common initial value, in that order. This also addresses GitHub issue #5.
 
 ## Post-handoff corrections

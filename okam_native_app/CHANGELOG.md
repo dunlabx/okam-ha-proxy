@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.12
+
+- Removes the obsolete global camera password option.
+- Adds safe bridge request diagnostics and per-camera native session lifecycle markers.
+
 ## 1.2.11
 
 - Renders camera authentication method as a Supervisor add-on dropdown.

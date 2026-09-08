@@ -15,7 +15,6 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | --- | --- |
 | `account_username` | Email address of the O-KAM account |
 | `account_password` | Password of the O-KAM account |
-| `camera_password` | Legacy account-wide camera password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
 | `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`, and optional `auth_method`; empty means all account cameras |
 | `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
@@ -37,8 +36,9 @@ selects automatic mode. Automatic mode treats an API password field that is
 present but empty as the intentional `empty_password` candidate before
 `888888`. Set `auth_method: password` to use exactly the configured
 value, including `password: ""`; this disables cache and every fallback
-candidate for that camera. The legacy top-level `camera_password` remains
-available for older configurations without a non-empty `cameras` list. Camera
+candidate for that camera. Stale top-level `camera_password` values from older
+configurations are ignored; credentials are read only from each configured
+camera entry. Camera
 passwords never appear in the API, logs, cache, or HACS during normal operation.
 
 `debug_credentials: true` is a temporary diagnosis switch. It emits exact

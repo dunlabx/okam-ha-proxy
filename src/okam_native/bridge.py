@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import traceback
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -28,6 +29,20 @@ _EXPECTED_DISCONNECTS = (
     TimeoutError,
 )
 HOST_PATTERN = re.compile(r"^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::[0-9]{1,5})?$")
+_SECRET_TEXT = re.compile(r"(?i)(password|token|secret|authorization)(\s*[=:]\s*)([^\s,;]+)")
+
+
+def _redact_diagnostic_text(value: str) -> str:
+    """Keep request diagnostics useful without echoing credential material."""
+
+    return _SECRET_TEXT.sub(r"\1\2<redacted>", value).replace("\n", "\\n")
+
+
+def _request_camera_uid(path: str) -> str | None:
+    parts = [unquote(part) for part in urlsplit(path).path.split("/") if part]
+    if len(parts) >= 3 and parts[:2] == ["api", "cameras"]:
+        return parts[2]
+    return None
 
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
@@ -196,7 +211,31 @@ def make_handler(
     class BridgeHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def handle(self) -> None:  # noqa: D105 - BaseHTTPRequestHandler API
+            try:
+                super().handle()
+            except _EXPECTED_DISCONNECTS:
+                return
+            except Exception as error:  # pragma: no cover - exercised by boundary test
+                raw_path = getattr(self, "path", "")
+                request_path = urlsplit(raw_path).path or "/"
+                method = getattr(self, "command", None) or "UNKNOWN"
+                operation = getattr(self, "_request_operation", None) or "handle"
+                camera_uid = _request_camera_uid(request_path)
+                stack = _redact_diagnostic_text(traceback.format_exc())
+                message = _redact_diagnostic_text(str(error)) or "<empty>"
+                print(
+                    "bridge_request_failed "
+                    f"error={type(error).__name__} message={message} "
+                    f"method={method} path={request_path} "
+                    f"camera_uid={camera_uid or '-'} operation={operation} "
+                    f"traceback={stack}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self._request_operation = "do_GET"
             parsed = urlsplit(self.path)
             if parsed.path == "/health":
                 self._json(200, {"service": "okam-native", "status": "ok"})
@@ -294,6 +333,7 @@ def make_handler(
                 self._json(404, {"error": "not_found"})
 
         def do_PATCH(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self._request_operation = "do_PATCH"
             bridge = self._authorized_bridge()
             if bridge is None:
                 return
@@ -316,6 +356,7 @@ def make_handler(
             self._json(200, {"idle_timeout_seconds": idle_timeout})
 
         def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            self._request_operation = "do_POST"
             bridge = self._authorized_bridge()
             if bridge is None:
                 return
@@ -366,7 +407,7 @@ def make_handler(
 
         def _raw_stream(self, bridge: CameraBridge) -> None:
             try:
-                subscription = bridge.session.acquire()
+                subscription = bridge.session.acquire(reason="bridge_http")
             except P2PError:
                 self._json(503, {"error": "stream_unavailable"})
                 return
@@ -396,7 +437,7 @@ def make_handler(
             """
 
             try:
-                subscription = bridge.session.acquire()
+                subscription = bridge.session.acquire(reason="bridge_http_muxed")
             except P2PError:
                 self._json(503, {"error": "stream_unavailable"})
                 return

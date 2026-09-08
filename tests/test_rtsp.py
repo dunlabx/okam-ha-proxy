@@ -110,7 +110,7 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
         def parameter_sets(self):
             return (b"", b"")
 
-        def acquire(self, *, passive=False):
+        def acquire(self, *, passive=False, reason="active"):
             self.acquires += 1
             self.passive = passive
             return self.subscription

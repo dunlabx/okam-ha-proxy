@@ -86,7 +86,6 @@ configuration.
    | --- | --- |
    | `account_username` | Email address of the O-KAM account |
    | `account_password` | Password of the O-KAM account |
-   | `camera_password` | Legacy account-wide override; normally leave blank |
    | `api_token` | A new random secret of at least 16 characters that you choose |
    | `cameras` | Optional list of `{uid, alias, password}` mappings; empty exposes all account cameras |
    | `debug_credentials` | Temporary diagnostic mode; leave `false` except during a controlled local test |
@@ -140,9 +139,10 @@ strict override behavior and an absent or empty value selects automatic mode. In
 automatic mode an explicitly empty password returned by O-KAM is a real,
 bounded `empty_password` candidate before `888888`. To force one configured
 credential, set `auth_method: password`; this permits `password: ""`
-and tries exactly that value without cache or fallback candidates. The legacy
-top-level `camera_password` remains for older configurations without a non-empty
-`cameras` list. Camera passwords stay out of logs, API responses, diagnostics,
+and tries exactly that value without cache or fallback candidates. Stale top-level
+`camera_password` values from older configurations are ignored; credentials are
+read only from each configured camera entry. Camera passwords stay out of logs,
+API responses, diagnostics,
 cache, and HACS unless the temporary diagnostic option below is deliberately
 enabled.
 

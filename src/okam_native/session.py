@@ -75,8 +75,16 @@ class NativeStreamSession:
         idle_timeout: float = 120.0,
         standby_frame: bytes | None = None,
         standby_interval: float = 1.0,
+        camera_uid: str | None = None,
+        transport_uid: str | None = None,
+        logger: Callable[[str], None] | None = None,
     ) -> None:
         self._starter = starter
+        self._camera_uid = camera_uid
+        self._transport_uid = transport_uid
+        self._logger = logger
+        self._session_id = uuid.uuid4().hex
+        self._session_generation = 0
         self.idle_timeout = idle_timeout
         self._lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None
@@ -100,7 +108,7 @@ class NativeStreamSession:
         else:
             self._standby_media = (b"", b"", b"")
 
-    def acquire(self, *, passive: bool = False) -> StreamSubscription:
+    def acquire(self, *, passive: bool = False, reason: str = "active") -> StreamSubscription:
         with self._lock:
             if self._closed:
                 raise P2PError("native stream session is closed")
@@ -108,7 +116,7 @@ class NativeStreamSession:
                 self._idle_timer.cancel()
                 self._idle_timer = None
             if not passive and (self._process is None or self._process.poll() is not None):
-                self._start_locked()
+                self._start_locked(reason)
             subscription_id = uuid.uuid4().hex
             chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
             # Start the viewer on a decodable boundary. Without this it waits
@@ -139,6 +147,16 @@ class NativeStreamSession:
     def _active_subscribers_locked(self) -> bool:
         return any(not passive for _chunks, passive in self._subscribers.values())
 
+    def _active_count_locked(self) -> int:
+        return sum(not passive for _chunks, passive in self._subscribers.values())
+
+    def _passive_count_locked(self) -> int:
+        return sum(passive for _chunks, passive in self._subscribers.values())
+
+    def _emit(self, message: str) -> None:
+        if self._logger is not None:
+            self._logger(message)
+
     def _ensure_standby_thread_locked(self) -> None:
         if not self._standby_frame or self._closed:
             return
@@ -149,7 +167,7 @@ class NativeStreamSession:
             self._standby_thread.start()
 
     def snapshot(self, ffmpeg: str, *, timeout: float = 90.0) -> tuple[bytes, int, int]:
-        subscription = self.acquire()
+        subscription = self.acquire(reason="bridge_snapshot")
         decoder: subprocess.Popen[bytes] | None = None
         writer: threading.Thread | None = None
         try:
@@ -291,7 +309,18 @@ class NativeStreamSession:
             self._put_chunk(chunks, _END)
         self._terminate(process)
 
-    def _start_locked(self) -> None:
+    def _start_locked(self, reason: str = "active") -> None:
+        self._session_generation += 1
+        generation = self._session_generation
+        self._emit(
+            "native_session_start "
+            f"camera_uid={self._camera_uid or '-'} "
+            f"transport_uid={self._transport_uid or '-'} "
+            f"session_id={self._session_id} session_generation={generation} "
+            f"start_reason={reason} existing_state=starting "
+            f"active_consumers={self._active_count_locked()} "
+            f"passive_consumers={self._passive_count_locked()}"
+        )
         self._stderr.clear()
         self._clean_disconnect = None
         self._last_error = None
@@ -305,6 +334,12 @@ class NativeStreamSession:
             process.wait(timeout=5)
             raise P2PError("native stream helper pipes are unavailable")
         self._process = process
+        self._emit(
+            "native_session_process "
+            f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
+            f"session_id={self._session_id} session_generation={generation} "
+            f"process_pid={getattr(process, 'pid', None) or '-'} start_reason={reason}"
+        )
         stderr_thread = threading.Thread(
             target=self._drain_stderr, args=(process,), daemon=True
         )
@@ -344,6 +379,14 @@ class NativeStreamSession:
                     self._process = None
                 self._restore_standby_media_locked()
                 self._parse_summary_locked(process.returncode)
+                self._emit(
+                    "native_session_end "
+                    f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
+                    f"session_id={self._session_id} session_generation={self._session_generation} "
+                    f"process_pid={getattr(process, 'pid', None) or '-'} "
+                    f"returncode={process.returncode} active_consumers={self._active_count_locked()} "
+                    f"passive_consumers={self._passive_count_locked()}"
+                )
             for chunks in active_subscribers:
                 self._put_chunk(chunks, _END)
             with self._lock:

@@ -39,7 +39,7 @@ its own alias.
 
 ## Camera authentication fails
 
-Leave `camera_password` blank for normal setup. The bridge first uses the
+Configure credentials inside the selected camera entry. The bridge first uses the
 camera-level credential returned by O-KAM and automatically handles accounts
 that omit it by trying the camera's common initial value.
 
@@ -48,9 +48,9 @@ authentication failure, the camera may use a changed local password that O-KAM
 did not return. For one camera, add its `password` inside the matching
 `cameras` entry, save, and restart the app. A non-empty per-camera value is
 strict: only that credential is tried and it is never cached. A missing or empty
-per-camera value keeps automatic authentication. The legacy top-level
-`camera_password` remains for older configurations without a non-empty
-`cameras` list. These values are not the O-KAM account password or bridge API
+per-camera value keeps automatic authentication. Stale top-level
+`camera_password` values from older configurations are ignored. These values are
+not the O-KAM account password or bridge API
 token. Do not post them in an issue.
 
 Each camera mapping may set `auth_method` to `automatic` or

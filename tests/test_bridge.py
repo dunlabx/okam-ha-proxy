@@ -33,7 +33,7 @@ class FakeSession:
     def snapshot(self, _ffmpeg: str):
         return b"\xff\xd8jpeg\xff\xd9", 2304, 1296
 
-    def acquire(self) -> FakeSubscription:
+    def acquire(self, *, reason: str = "active") -> FakeSubscription:
         return self.subscription
 
 
@@ -248,3 +248,39 @@ def test_dropped_clients_do_not_report_a_crash(capsys) -> None:
     assert "bridge_request_failed error=ValueError" in captured
     assert "172.30.32.2" not in captured
     assert "Traceback" not in captured
+
+
+def test_unexpected_request_exception_logs_safe_production_context(capsys) -> None:
+    bridge = CameraBridge(
+        camera_id="front",
+        camera_uid="UID_FRONT",
+        camera_name="Front",
+        api_token="safe-token-123",
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+
+    def failing_status() -> dict[str, object]:
+        raise AttributeError("Popen object has no attribute connected password=secret")
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_handler(failing_status, lambda: bridge)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        try:
+            request(server, "GET", "/ready?token=secret", token="safe-token-123")
+        except (ConnectionError, OSError, http.client.HTTPException):
+            pass
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+    captured = capsys.readouterr().err
+    assert "bridge_request_failed error=AttributeError" in captured
+    assert "message=Popen object has no attribute connected" in captured
+    assert "method=GET path=/ready" in captured
+    assert "operation=do_GET" in captured
+    assert "traceback=" in captured
+    assert "secret" not in captured

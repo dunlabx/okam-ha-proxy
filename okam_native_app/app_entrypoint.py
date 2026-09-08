@@ -286,9 +286,8 @@ def _camera_password_override(
 ) -> tuple[object, bool]:
     """Return the per-camera override and whether it is strict.
 
-    The legacy top-level ``camera_password`` remains available only when the
-    newer ``cameras`` list is absent or empty.  A configured per-camera value
-    is intentionally isolated and never enters the automatic candidate set.
+    Camera credentials are only read from the selected ``cameras`` entry.
+    Stale top-level ``camera_password`` values from older options are ignored.
     """
 
     password = getattr(selection, "password", None)
@@ -298,10 +297,7 @@ def _camera_password_override(
         if password is None:
             raise AccountError("password auth_method requires a password")
         return password, True
-    cameras = options.get("cameras")
-    if isinstance(cameras, list) and cameras:
-        return None, False
-    return options.get("camera_password"), False
+    return None, False
 
 
 def run_p2p_acceptance(selection: CameraSelection) -> None:
@@ -570,6 +566,9 @@ def configure_bridge(
         start_stream,
         idle_timeout=float(idle_timeout),
         standby_frame=standby_frame,
+        camera_uid=device.uid,
+        transport_uid=client_id,
+        logger=print,
     )
     camera_id = alias or device.uid
     bridge = CameraBridge(
