@@ -42,6 +42,26 @@ static uintptr_t stack_guard;
 static volatile sig_atomic_t stream_running = 1;
 extern void __stack_chk_fail(void);
 
+static long long diagnostic_started_ms(void) {
+    struct timespec value;
+    if (clock_gettime(CLOCK_MONOTONIC, &value) != 0) return 0;
+    return (long long)value.tv_sec * 1000LL + value.tv_nsec / 1000000LL;
+}
+
+static void diagnostic_event(const char *event, const char *uid, const char *extra) {
+    static long long started = 0;
+    if (started == 0) started = diagnostic_started_ms();
+    fprintf(stderr, "native_diag event=%s camera_uid=%s session_id=%s "
+                    "session_generation=%s elapsed_ms=%lld%s%s\n",
+            event, uid != NULL ? uid : "-",
+            getenv("OKAM_DIAG_SESSION_ID") != NULL ? getenv("OKAM_DIAG_SESSION_ID") : "-",
+            getenv("OKAM_DIAG_SESSION_GENERATION") != NULL ? getenv("OKAM_DIAG_SESSION_GENERATION") : "-",
+            diagnostic_started_ms() - started,
+            extra != NULL && extra[0] != '\0' ? " " : "",
+            extra != NULL ? extra : "");
+    fflush(stderr);
+}
+
 static bool debug_credentials_enabled(void) {
     const char *value = getenv("OKAM_DEBUG_CREDENTIALS");
     return value != NULL && strcmp(value, "1") == 0;
@@ -238,6 +258,22 @@ static bool inspect_h264_payload(const unsigned char *payload, size_t size,
     return valid;
 }
 
+static void diagnostic_h264_units(const unsigned char *payload, size_t size, const char *uid) {
+    static bool sps_seen = false;
+    static bool pps_seen = false;
+    static bool idr_seen = false;
+    for (size_t i = 0; i + 4 < size; ++i) {
+        size_t nal = 0;
+        if (payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 1) nal = i + 3;
+        else if (payload[i] == 0 && payload[i + 1] == 0 && payload[i + 2] == 0 && payload[i + 3] == 1) nal = i + 4;
+        if (nal == 0 || nal >= size) continue;
+        uint8_t type = payload[nal] & 0x1fU;
+        if (type == 7U && !sps_seen) { sps_seen = true; diagnostic_event("first_h264_sps", uid, ""); }
+        if (type == 8U && !pps_seen) { pps_seen = true; diagnostic_event("first_h264_pps", uid, ""); }
+        if (type == 5U && !idr_seen) { idr_seen = true; diagnostic_event("first_h264_idr", uid, ""); }
+    }
+}
+
 static bool await_h264_frames(client_read_fn client_read, void *client,
                               unsigned int *frames, unsigned long long *bytes,
                               bool *keyframe_seen, unsigned int *h265_frames) {
@@ -285,9 +321,10 @@ static bool write_stdout(const unsigned char *payload, size_t size) {
     return true;
 }
 
-static bool forward_h264_frames(client_read_fn client_read, void *client,
+static bool forward_h264_frames(client_read_fn client_read, void *client, const char *uid,
                                 unsigned int *frames, unsigned long long *bytes,
                                 bool *keyframe_seen, unsigned int *h265_frames) {
+    unsigned long long packet_count = 0;
     while (stream_running) {
         time_t deadline = time(NULL) + STREAM_TIMEOUT_SECONDS;
         unsigned char header[VIDEO_HEADER_BYTES];
@@ -302,12 +339,31 @@ static bool forward_h264_frames(client_read_fn client_read, void *client,
                                          payload, length, deadline);
         bool write_ok = true;
         if (read_ok) {
+            packet_count++;
+            if (packet_count == 1) {
+                char extra[64];
+                snprintf(extra, sizeof(extra), "bytes=%u", length);
+                diagnostic_event("first_native_video_packet", uid, extra);
+            }
+            if (packet_count == 1 || packet_count % 100 == 0) {
+                char extra[128];
+                snprintf(extra, sizeof(extra), "native_video_packet_count=%llu bytes=%u",
+                         packet_count, length);
+                diagnostic_event("native_video_packet_progress", uid, extra);
+            }
             if (header[4] == 0x10U || header[4] == 0x11U) {
                 (*h265_frames)++;
             } else if (inspect_h264_payload(payload, length, keyframe_seen)) {
+                diagnostic_h264_units(payload, length, uid);
                 (*frames)++;
                 *bytes += length;
                 write_ok = write_stdout(payload, length);
+                if (write_ok && (*frames == 1 || *frames % 100 == 0)) {
+                    char extra[160];
+                    snprintf(extra, sizeof(extra), "helper_stdout_bytes_total=%llu h264_frame_count=%u",
+                             *bytes, *frames);
+                    diagnostic_event("helper_stdout_progress", uid, extra);
+                }
             }
         }
         memset(payload, 0, length);
@@ -432,6 +488,12 @@ int main(int argc, char **argv) {
     if (client != NULL) {
         state = client_connect(client, CONNECT_TYPE_NORMAL, service_parameter, 0);
         connected = state == CONNECT_STATE_ONLINE;
+        {
+            char extra[96];
+            snprintf(extra, sizeof(extra), "connect_state=%d connected=%s", state,
+                     connected ? "true" : "false");
+            diagnostic_event("native_connect_result", uid, extra);
+        }
         if (connected && authenticate) {
             if (debug_credentials_enabled()) {
                 print_debug_credential("ipc_read", uid, device_password);
@@ -449,6 +511,14 @@ int main(int argc, char **argv) {
                     client_read, client, &login_command, &login_result);
                 authenticated = login_response_received && login_result == 0;
                 login_candidate = credential_index;
+                {
+                    char extra[192];
+                    snprintf(extra, sizeof(extra),
+                             "login_response_received=%s login_result=%d authenticated=%s",
+                             login_response_received ? "true" : "false", login_result,
+                             authenticated ? "true" : "false");
+                    diagnostic_event("native_login_result", uid, extra);
+                }
             }
         }
         if (stream_stdout) {
@@ -463,15 +533,18 @@ int main(int argc, char **argv) {
             fflush(stderr);
         }
         if (connected && authenticated && live_mode) {
+            diagnostic_event("livestream_command_begin", uid, "streamid=10 substream=2");
             stream_start_sent = client_write_cgi(
                 client, "livestream.cgi?streamid=10&substream=2&", 5000);
+            diagnostic_event("livestream_command_sent", uid,
+                             stream_start_sent ? "stream_start_sent=true" : "stream_start_sent=false");
             if (stream_start_sent) {
                 if (stream_stdout) {
                     signal(SIGPIPE, SIG_IGN);
                     signal(SIGINT, stop_streaming);
                     signal(SIGTERM, stop_streaming);
                     h264_received = forward_h264_frames(
-                        client_read, client, &h264_frames, &h264_bytes,
+                        client_read, client, uid, &h264_frames, &h264_bytes,
                         &keyframe_seen, &h265_frames);
                 } else {
                     h264_received = await_h264_frames(

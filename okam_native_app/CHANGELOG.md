@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.16
+
+- Adds credential-free ARM64/amd64 live-stream boundary diagnostics for the
+  next real Home Assistant test.
+
 ## 1.2.15
 
 - Fixes HTTP API authentication when the production handler receives the

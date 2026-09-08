@@ -138,6 +138,35 @@ def test_session_lifecycle_logs_identify_camera_and_process_generation() -> None
     assert any("native_session_process" in line and "session_generation=1" in line for line in lines)
 
 
+def test_session_diagnostics_identify_live_boundary_without_credentials() -> None:
+    lines: list[str] = []
+    process = FakeProcess()
+    session = NativeStreamSession(
+        lambda: process,
+        camera_uid="UID_FRONT",
+        logger=lines.append,
+    )  # type: ignore[arg-type]
+    subscription = session.acquire(reason="ha_live")
+    process.stdout.chunks.put(
+        _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"idr") + _unit(1, b"frame")
+    )
+    deadline = time.monotonic() + 2
+    while not session.status().media_ready and time.monotonic() < deadline:
+        time.sleep(0.01)
+    subscription.close()
+    session.close()
+
+    diagnostics = "\n".join(line for line in lines if line.startswith("native_diag "))
+    assert "event=session_lock_acquired" in diagnostics
+    assert "event=first_helper_stdout_chunk" in diagnostics
+    assert "event=first_h264_sps" in diagnostics
+    assert "event=first_h264_pps" in diagnostics
+    assert "event=first_h264_idr" in diagnostics
+    assert "camera_uid=UID_FRONT" in diagnostics
+    assert "session_generation=1" in diagnostics
+    assert "password" not in diagnostics.lower()
+
+
 def test_transport_failure_returns_to_retryable_state_without_overlap() -> None:
     starts = []
     process = FakeProcess()

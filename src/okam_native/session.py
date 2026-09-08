@@ -85,6 +85,7 @@ class NativeStreamSession:
         self._transport_uid = transport_uid
         self._logger = logger
         self._session_id = uuid.uuid4().hex
+        self._diagnostic_started = time.monotonic()
         self._session_generation = 0
         self._state = "IDLE"
         self.idle_timeout = idle_timeout
@@ -104,21 +105,46 @@ class NativeStreamSession:
         self._standby_interval = max(0.1, standby_interval)
         self._standby_thread: threading.Thread | None = None
         self._closed = False
+        self._helper_stdout_bytes = 0
+        self._helper_stdout_chunks = 0
+        self._h264_frame_count = 0
+        self._diagnostic_events: set[str] = set()
         if self._standby_frame:
             self._note_media(self._standby_frame + ANNEX_B_START)
             self._standby_media = (self._sps, self._pps, self._keyframe)
+            # Standby media is a synthetic placeholder.  Do not let it consume
+            # the first-live SPS/PPS/IDR diagnostics or frame counters.
+            self._h264_frame_count = 0
+            self._diagnostic_events.clear()
         else:
             self._standby_media = (b"", b"", b"")
 
     def acquire(self, *, passive: bool = False, reason: str = "active") -> StreamSubscription:
+        wait_begin = time.monotonic()
+        self._diagnostic("session_lock_wait_begin", reason=reason, passive=passive)
         with self._lock:
+            lock_acquired = time.monotonic()
+            self._diagnostic(
+                "session_lock_acquired",
+                reason=reason,
+                passive=passive,
+                session_lock_wait_ms=round((lock_acquired - wait_begin) * 1000, 1),
+            )
             if self._closed:
                 raise P2PError("native stream session is closed")
             if self._idle_timer is not None:
                 self._idle_timer.cancel()
                 self._idle_timer = None
             if not passive and (self._process is None or self._process.poll() is not None):
+                start_begin = time.monotonic()
+                self._diagnostic("session_start_begin", reason=reason)
                 self._start_locked(reason)
+                self._diagnostic(
+                    "session_start_complete",
+                    reason=reason,
+                    session_lock_hold_ms=round((time.monotonic() - lock_acquired) * 1000, 1),
+                    session_start_elapsed_ms=round((time.monotonic() - start_begin) * 1000, 1),
+                )
             subscription_id = uuid.uuid4().hex
             chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
             # Start the viewer on a decodable boundary. Without this it waits
@@ -128,7 +154,7 @@ class NativeStreamSession:
                 chunks.put_nowait(preamble)
             self._subscribers[subscription_id] = (chunks, passive)
             if passive and self._process is None:
-                self._state = "STANDBY"
+                self._set_state_locked("STANDBY")
                 self._put_chunk(chunks, self._standby_frame)
                 self._ensure_standby_thread_locked()
             return StreamSubscription(self, subscription_id, chunks)
@@ -159,6 +185,52 @@ class NativeStreamSession:
     def _emit(self, message: str) -> None:
         if self._logger is not None:
             self._logger(message)
+
+    def diagnostic(self, event: str, **fields: object) -> None:
+        """Emit a credential-free diagnostic event for an outer protocol layer."""
+        with self._lock:
+            self._diagnostic(event, **fields)
+
+    def _diagnostic(self, event: str, **fields: object) -> None:
+        repeatable = {
+            "session_lock_wait_begin",
+            "session_lock_acquired",
+            "stream_http_request_received",
+            "active_acquire_begin",
+            "active_acquire_complete",
+            "http_headers_sent",
+            "request_total_complete",
+            "muxer_start",
+            "muxer_started",
+            "muxer_exit",
+        }
+        if event in self._diagnostic_events and event not in repeatable:
+            return
+        if event not in repeatable:
+            self._diagnostic_events.add(event)
+        values = {
+            "event": event,
+            "camera_uid": self._camera_uid or "-",
+            "session_id": self._session_id,
+            "session_generation": self._session_generation,
+            "elapsed_ms": round((time.monotonic() - self._diagnostic_started) * 1000, 1),
+        }
+        values.update(fields)
+        self._emit("native_diag " + " ".join(f"{key}={value}" for key, value in values.items()))
+
+    def _set_state_locked(self, state: str) -> None:
+        previous = self._state
+        self._state = state
+        if previous != state:
+            self._diagnostic(
+                "state_transition",
+                from_state=previous,
+                to_state=state,
+                media_ready=self._media_ready,
+                process_running=str(self._process is not None and self._process.poll() is None).lower(),
+                active_consumers=self._active_count_locked(),
+                passive_consumers=self._passive_count_locked(),
+            )
 
     def _ensure_standby_thread_locked(self) -> None:
         if not self._standby_frame or self._closed:
@@ -265,10 +337,20 @@ class NativeStreamSession:
         kind = unit[prefix] & 0x1F
         if kind == 7:
             self._sps = unit
+            self._diagnostic("first_h264_sps", bytes=len(unit))
         elif kind == 8:
             self._pps = unit
+            self._diagnostic("first_h264_pps", bytes=len(unit))
         elif kind == 5:
             self._keyframe = unit
+            self._h264_frame_count += 1
+            self._diagnostic("first_h264_idr", bytes=len(unit))
+        elif kind == 1:
+            self._h264_frame_count += 1
+        if kind in (1, 5) and (
+            self._h264_frame_count == 1 or self._h264_frame_count % 100 == 0
+        ):
+            self._diagnostic("h264_frame_progress", h264_frame_count=self._h264_frame_count)
 
     def _preamble(self) -> bytes:
         """The bytes a new viewer needs before live data makes sense."""
@@ -308,7 +390,7 @@ class NativeStreamSession:
                 self._idle_timer = None
             process = self._process
             if process is not None and process.poll() is None:
-                self._state = "STOPPING"
+                self._set_state_locked("STOPPING")
             subscribers = tuple(chunks for chunks, _passive in self._subscribers.values())
             self._subscribers.clear()
         for chunks in subscribers:
@@ -319,7 +401,8 @@ class NativeStreamSession:
         self._session_generation += 1
         generation = self._session_generation
         state_before = self._state
-        self._state = "STARTING"
+        self._set_state_locked("STARTING")
+        self._diagnostic("native_start_begin", reason=reason)
         self._emit(
             "native_session_start "
             f"camera_uid={self._camera_uid or '-'} "
@@ -336,7 +419,11 @@ class NativeStreamSession:
         # A new helper means a new encoder state, so cached units are stale.
         self._scan.clear()
         self._sps = self._pps = self._keyframe = b""
-        self._state = "AUTHENTICATING"
+        self._helper_stdout_bytes = 0
+        self._helper_stdout_chunks = 0
+        self._h264_frame_count = 0
+        self._diagnostic_events.clear()
+        self._set_state_locked("AUTHENTICATING")
         self._emit(
             "native_session_auth "
             f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
@@ -346,7 +433,13 @@ class NativeStreamSession:
         try:
             process = self._starter()
         except Exception:
-            self._state = "FAILED"
+            self._set_state_locked("FAILED")
+            self._diagnostic(
+                "camera_live_failed",
+                failure_stage="native_start",
+                exception_class="starter_error",
+                exception_message="redacted",
+            )
             self._emit(
                 "native_session_failed "
                 f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
@@ -355,12 +448,12 @@ class NativeStreamSession:
             )
             raise
         if process.stdout is None or process.stderr is None:
-            self._state = "FAILED"
+            self._set_state_locked("FAILED")
             process.kill()
             process.wait(timeout=5)
             raise P2PError("native stream helper pipes are unavailable")
         self._process = process
-        self._state = "CONNECTED"
+        self._set_state_locked("CONNECTED")
         self._emit(
             "native_session_process "
             f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
@@ -386,9 +479,23 @@ class NativeStreamSession:
                 if not chunk:
                     break
                 with self._lock:
+                    self._helper_stdout_chunks += 1
+                    self._helper_stdout_bytes += len(chunk)
+                    if self._helper_stdout_chunks == 1:
+                        self._diagnostic("first_helper_stdout_chunk", bytes=len(chunk))
+                        self._diagnostic("pump_first_chunk", bytes=len(chunk))
+                    if self._helper_stdout_chunks == 1 or self._helper_stdout_chunks % 100 == 0:
+                        self._diagnostic(
+                            "pump_progress",
+                            pump_bytes_total=self._helper_stdout_bytes,
+                            helper_stdout_bytes_total=self._helper_stdout_bytes,
+                            subscriber_count=len(self._subscribers),
+                            active_subscriber_count=self._active_count_locked(),
+                            passive_subscriber_count=self._passive_count_locked(),
+                        )
                     self._media_ready = True
                     if self._state == "CONNECTED":
-                        self._state = "STREAMING"
+                        self._set_state_locked("STREAMING")
                     self._note_media(chunk)
                     subscribers = tuple(
                         chunks for chunks, _passive in self._subscribers.values()
@@ -410,9 +517,9 @@ class NativeStreamSession:
                 self._restore_standby_media_locked()
                 self._parse_summary_locked(process.returncode)
                 state_before = self._state
-                self._state = "STANDBY" if any(
+                self._set_state_locked("STANDBY" if any(
                     passive for _chunks, passive in self._subscribers.values()
-                ) else "IDLE"
+                ) else "IDLE")
                 self._emit(
                     "native_session_end "
                     f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "
@@ -461,7 +568,7 @@ class NativeStreamSession:
                 return
             process = self._process
             if process is not None and process.poll() is None:
-                self._state = "STOPPING"
+                self._set_state_locked("STOPPING")
                 self._emit(
                     "native_session_stop "
                     f"camera_uid={self._camera_uid or '-'} transport_uid={self._transport_uid or '-'} "

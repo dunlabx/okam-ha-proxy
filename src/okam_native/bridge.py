@@ -9,6 +9,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -43,6 +44,12 @@ def _request_camera_uid(path: str) -> str | None:
     if len(parts) >= 3 and parts[:2] == ["api", "cameras"]:
         return parts[2]
     return None
+
+
+def _session_diagnostic(bridge: CameraBridge, event: str, **fields: object) -> None:
+    emit = getattr(bridge.session, "diagnostic", None)
+    if callable(emit):
+        emit(event, **fields)
 
 
 class QuietThreadingHTTPServer(ThreadingHTTPServer):
@@ -215,6 +222,10 @@ def make_handler(
     class BridgeHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
+        def setup(self) -> None:
+            super().setup()
+            self._request_started = time.monotonic()
+
         def handle(self) -> None:  # noqa: D105 - BaseHTTPRequestHandler API
             try:
                 super().handle()
@@ -320,6 +331,7 @@ def make_handler(
                     self._json(401, {"error": "unauthorized"})
                     return
                 if parsed.path.endswith("/stream.ts"):
+                    _session_diagnostic(bridge, "stream_http_request_received", path=parsed.path)
                     self._muxed_stream(bridge)
                 else:
                     self._raw_stream(bridge)
@@ -440,11 +452,27 @@ def make_handler(
             re-encoding.
             """
 
+            request_started = time.monotonic()
+            _session_diagnostic(bridge, "muxer_start")
+            _session_diagnostic(bridge, "active_acquire_begin", operation="muxer")
             try:
                 subscription = bridge.session.acquire(reason="bridge_http_muxed")
             except P2PError:
+                _session_diagnostic(
+                    bridge,
+                    "camera_live_failed",
+                    failure_stage="active_acquire",
+                    exception_class="P2PError",
+                    exception_message="redacted",
+                    elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
+                )
                 self._json(503, {"error": "stream_unavailable"})
                 return
+            _session_diagnostic(
+                bridge,
+                "active_acquire_complete",
+                active_acquire_elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
+            )
             muxer: subprocess.Popen[bytes] | None = None
             writer: threading.Thread | None = None
             try:
@@ -473,10 +501,15 @@ def make_handler(
                 self._json(503, {"error": "stream_unavailable"})
                 return
             assert muxer.stdin is not None and muxer.stdout is not None
+            _session_diagnostic(bridge, "muxer_started")
 
             def feed() -> None:
+                first_input = True
                 try:
                     for chunk in subscription:
+                        if first_input:
+                            first_input = False
+                            _session_diagnostic(bridge, "muxer_first_input", bytes=len(chunk))
                         muxer.stdin.write(chunk)  # type: ignore[union-attr]
                         muxer.stdin.flush()  # type: ignore[union-attr]
                 except (BrokenPipeError, ConnectionError, OSError, ValueError):
@@ -492,14 +525,26 @@ def make_handler(
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
+            _session_diagnostic(
+                bridge,
+                "http_headers_sent",
+                headers_elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
+            )
             self.close_connection = True
             try:
                 writer = threading.Thread(target=feed, daemon=True)
                 writer.start()
+                output_bytes = 0
+                first_output = True
                 while True:
                     piece = muxer.stdout.read(STREAM_CHUNK_BYTES)
                     if not piece:
                         break
+                    output_bytes += len(piece)
+                    if first_output:
+                        first_output = False
+                        _session_diagnostic(bridge, "muxer_first_output", bytes=len(piece))
+                        _session_diagnostic(bridge, "http_first_media_byte_sent", bytes=len(piece))
                     self.wfile.write(piece)
                     self.wfile.flush()
             except (BrokenPipeError, ConnectionError, OSError):
@@ -515,6 +560,17 @@ def make_handler(
                         muxer.wait(timeout=5)
                 if writer is not None:
                     writer.join(timeout=2)
+                _session_diagnostic(
+                    bridge,
+                    "muxer_exit",
+                    muxer_output_bytes_total=output_bytes if "output_bytes" in locals() else 0,
+                    muxer_exit_code=muxer.returncode if muxer is not None else None,
+                )
+                _session_diagnostic(
+                    bridge,
+                    "request_total_complete",
+                    request_total_elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
+                )
 
         def _request_json(self) -> dict[str, object] | None:
             try:
@@ -542,6 +598,15 @@ def make_handler(
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            elapsed_ms = round((time.monotonic() - self._request_started) * 1000, 1)
+            path = urlsplit(getattr(self, "path", "")).path
+            if elapsed_ms > 1000 and (path == "/ready" or path.endswith("/status")):
+                print(
+                    "native_diag event=slow_status_request camera_uid=- session_id=- "
+                    f"session_generation=- elapsed_ms={elapsed_ms} path={path} status={status}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
         def log_message(self, format: str, *args: object) -> None:
             return

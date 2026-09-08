@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 import struct
 import sys
+import time
 
 from .cs2 import (
     LIVE_STREAM_RESPONSE_COMMANDS,
@@ -29,6 +31,23 @@ LIVE_START_RESPONSE_SECONDS = 10.0
 
 
 _running = True
+_diagnostic_started = time.monotonic()
+
+
+def _diag(event: str, **fields: object) -> None:
+    values = {
+        "event": event,
+        "camera_uid": os.environ.get("OKAM_DIAG_CAMERA_UID", "-"),
+        "session_id": os.environ.get("OKAM_DIAG_SESSION_ID", "-"),
+        "session_generation": os.environ.get("OKAM_DIAG_SESSION_GENERATION", "-"),
+        "elapsed_ms": round((time.monotonic() - _diagnostic_started) * 1000, 1),
+        **fields,
+    }
+    print(
+        "native_diag " + " ".join(f"{key}={value}" for key, value in values.items()),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _debug_credentials_enabled() -> bool:
@@ -128,6 +147,8 @@ def run(
     result = _summary()
     accepted_user = "admin"
     accepted_password = device_password or ""
+    stdout_chunks = 0
+    native_video_packets = 0
     if mode != "connect":
         if _debug_credentials_enabled():
             print(_credential_debug_line("native_login_input", accepted_password, uid), file=sys.stderr, flush=True)
@@ -142,6 +163,7 @@ def run(
     try:
         session.connect(timeout=55.0)
         result.update(connected=True, connect_state=3, connect_path=session.connect_path)
+        _diag("native_connect_result", connect_state=3, connected=True)
         if mode == "connect":
             result["disconnected"] = session.close()
             return _finish(session, result, 0)
@@ -167,6 +189,7 @@ def run(
                     login_command=answer[0],
                     login_result=answer[1],
                 )
+                _diag("native_login_result", login_result=answer[1], authenticated=answer[1] == 0)
         else:
             result["login_sent"] = True
             login = authenticate_camera(session, device_password)
@@ -211,6 +234,7 @@ def run(
             ),
         )
         result["stream_start_sent"] = True
+        _diag("livestream_command_sent", stream_start_sent=True)
         # Media buffers normally while this bounded read waits, so claiming the
         # acknowledgement here costs no frames.
         answer = read_command_result(
@@ -224,6 +248,16 @@ def run(
         signal.signal(signal.SIGTERM, _stop)
         while _running:
             payload, frame_type = read_video_frame(session, timeout=45.0)
+            native_video_packets += 1
+            if native_video_packets == 1:
+                _diag("first_native_video_packet", bytes=len(payload), frame_type=frame_type)
+            if native_video_packets == 1 or native_video_packets % 100 == 0:
+                _diag(
+                    "native_video_packet_progress",
+                    native_video_packet_count=native_video_packets,
+                    frame_type=frame_type,
+                    bytes=len(payload),
+                )
             if frame_type in (0x10, 0x11):
                 result["h265_frames"] = int(result["h265_frames"]) + 1
                 continue
@@ -238,6 +272,13 @@ def run(
                 try:
                     sys.stdout.buffer.write(payload)
                     sys.stdout.buffer.flush()
+                    stdout_chunks += 1
+                    if stdout_chunks == 1 or stdout_chunks % 100 == 0:
+                        _diag(
+                            "helper_stdout_progress",
+                            first_helper_stdout_chunk=stdout_chunks == 1,
+                            helper_stdout_bytes_total=int(result["h264_bytes"]),
+                        )
                 except (BrokenPipeError, OSError):
                     break
             elif (

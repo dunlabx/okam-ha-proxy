@@ -544,33 +544,108 @@ def configure_bridge(
         raise WakeError("official wake configuration was unavailable")
     client_id = resolve_client_id(device.uid)
     service_parameter = get_service_parameter(client_id)
+    session_ref: list[NativeStreamSession | None] = [None]
+
+    def session_diag(event: str, **fields: object) -> None:
+        session = session_ref[0]
+        if session is not None:
+            session.diagnostic(event, **fields)
 
     def start_stream() -> subprocess.Popen[bytes]:
+        started = time.monotonic()
+        session_diag("native_start_begin", reason="active_consumer")
+        session_diag("wake_begin")
         set_status(phase="waking_camera_on_demand")
         try:
             wake = asyncio.run(wake_camera(device.uid, credentials, timeout=12.0))
+            session_diag(
+                "wake_result",
+                requested=wake.requested,
+                responsive_servers=wake.responsive_servers,
+                wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
             set_status(
                 wake_requested=wake.requested,
                 wake_responsive_servers=wake.responsive_servers,
                 phase="starting_native_stream",
             )
-        except WakeError:
+        except WakeError as error:
+            session_diag(
+                "wake_result",
+                result="failed",
+                exception_class=type(error).__name__,
+                wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+            )
             set_status(phase="starting_native_stream")
-        _selected, _auth_result, process = AUTHENTICATOR.authenticate_resource(
-            device.uid,
-            candidates,
-            lambda candidate: open_authenticated_stream_process(
-                str(CONNECT_HELPER),
-                str(LIBRARY),
-                client_id,
-                service_parameter,
-                candidate.password,
-                environment=p2p_environment(debug_credentials),
-                credential_index=0,
-            ),
-            discard=lambda failed: _terminate_stream_process(failed),
-            debug_credentials=debug_credentials,
+        auth_started = time.monotonic()
+        session_diag("auth_begin")
+        try:
+            def open_candidate(candidate):
+                session_diag("native_process_spawn_begin", candidate=candidate.source)
+                environment = p2p_environment(debug_credentials)
+                runtime_session = session_ref[0]
+                if runtime_session is not None:
+                    environment.update(
+                        {
+                            "OKAM_DIAG_CAMERA_UID": device.uid,
+                            "OKAM_DIAG_SESSION_ID": runtime_session._session_id,
+                            "OKAM_DIAG_SESSION_GENERATION": str(runtime_session._session_generation),
+                        }
+                    )
+                result, process = open_authenticated_stream_process(
+                    str(CONNECT_HELPER),
+                    str(LIBRARY),
+                    client_id,
+                    service_parameter,
+                    candidate.password,
+                    environment=environment,
+                    credential_index=0,
+                )
+                session_diag(
+                    "native_process_spawned",
+                    process_pid=getattr(process, "pid", None) or "-",
+                )
+                session_diag(
+                    "native_connect_result",
+                    connect_state=result.connect_state,
+                    connected=result.connected,
+                )
+                session_diag(
+                    "native_login_result",
+                    login_response_received=result.login_response_received,
+                    login_result=result.login_result,
+                    authenticated=result.authenticated,
+                )
+                return result, process
+
+            _selected, _auth_result, process = AUTHENTICATOR.authenticate_resource(
+                device.uid,
+                candidates,
+                open_candidate,
+                discard=lambda failed: _terminate_stream_process(failed),
+                debug_credentials=debug_credentials,
+            )
+        except Exception as error:
+            session_diag(
+                "auth_result",
+                result="failed",
+                exception_class=type(error).__name__,
+                auth_elapsed_ms=round((time.monotonic() - auth_started) * 1000, 1),
+            )
+            session_diag(
+                "camera_live_failed",
+                failure_stage="authentication",
+                exception_class=type(error).__name__,
+                exception_message="redacted",
+                auth_elapsed_ms=round((time.monotonic() - auth_started) * 1000, 1),
+            )
+            raise
+        session_diag(
+            "auth_result",
+            result="success",
+            auth_elapsed_ms=round((time.monotonic() - auth_started) * 1000, 1),
         )
+        session_diag("livestream_command_sent")
         set_status(
             camera_authenticated=True,
             camera_authentication=True,
@@ -591,6 +666,7 @@ def configure_bridge(
         transport_uid=client_id,
         logger=print,
     )
+    session_ref[0] = session
     camera_id = alias or device.uid
     bridge = CameraBridge(
         camera_id=camera_id,

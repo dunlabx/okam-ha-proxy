@@ -13,6 +13,7 @@ import re
 import socket
 import socketserver
 import threading
+import time
 from urllib.parse import unquote, urlsplit
 
 from .bridge import BridgeRegistry, CameraBridge
@@ -270,6 +271,25 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._write_lock = threading.Lock()
         self._stream_thread: threading.Thread | None = None
         self._rtp_channel = 0
+        self._diagnostic_started = time.monotonic()
+        self._diagnostic_camera: CameraBridge | None = None
+        self._rtsp_bytes = 0
+        self._rtsp_chunks = 0
+        self._saw_standby = False
+        self._saw_live = False
+
+    def _diagnostic(self, event: str, **fields: object) -> None:
+        bridge = self._diagnostic_camera
+        if bridge is None:
+            return
+        emit = getattr(bridge.session, "diagnostic", None)
+        if callable(emit):
+            values = {
+                "operation": "rtsp",
+                "rtsp_elapsed_ms": round((time.monotonic() - self._diagnostic_started) * 1000, 1),
+                **fields,
+            }
+            emit(event, **values)
 
     def handle(self) -> None:
         buffer = bytearray()
@@ -324,6 +344,9 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         parsed = urlsplit(target)
         identifier = unquote(parsed.path.strip("/").split("/")[0])
         bridge = self.server.registry.get(identifier) if identifier else None
+        if bridge is not None and self._diagnostic_camera is None:
+            self._diagnostic_camera = bridge
+            self._diagnostic("rtsp_client_connected")
 
         if method == "OPTIONS":
             self._reply(200, cseq, {"Public": "OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER"})
@@ -372,6 +395,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             except (P2PError, OSError, RuntimeError):
                 self._reply(503, cseq)
                 return True
+            self._diagnostic("rtsp_subscription_created")
             self._reply(200, cseq, {"Session": self._session_id, "RTP-Info": "url=trackID=0"})
             self._stream_thread = threading.Thread(target=self._stream, daemon=True)
             self._stream_thread.start()
@@ -421,6 +445,18 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             for chunk in self._subscription:
                 if self._stop_stream.is_set():
                     return
+                self._rtsp_chunks += 1
+                self._rtsp_bytes += len(chunk)
+                if not self._saw_standby:
+                    self._saw_standby = True
+                    self._diagnostic("rtsp_first_standby_frame", bytes=len(chunk))
+                if not self._saw_live:
+                    status = getattr(self._bridge.session, "status", lambda: None)()
+                    if getattr(status, "running", False) and getattr(status, "media_ready", False):
+                        self._saw_live = True
+                        self._diagnostic("rtsp_first_live_chunk", bytes=len(chunk))
+                if self._rtsp_chunks == 1 or self._rtsp_chunks % 100 == 0:
+                    self._diagnostic("rtsp_progress", rtsp_chunks=self._rtsp_chunks, rtsp_live_bytes_total=self._rtsp_bytes)
                 for nal in _nal_units(chunk, carry):
                     if not nal:
                         continue
