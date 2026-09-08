@@ -234,15 +234,16 @@ def enumerate_account() -> list[CameraSelection] | None:
         if debug_credentials:
             print(
                 f"api_device_parsed uid={item.uid} "
+                f"password={item.device_password!r} "
                 "password_type=str "
-                f"password_repr={item.device_password!r} "
                 f"password_length={len(item.device_password)}",
                 flush=True,
             )
     for item in selected:
         print(
             f"camera_registered uid={item.device.uid} "
-            f"alias={item.alias or item.device.name}",
+            f"alias={item.alias or item.device.name} "
+            f"auth_method={item.auth_method}",
             flush=True,
         )
     return selected
@@ -290,7 +291,11 @@ def _camera_password_override(
     """
 
     password = getattr(selection, "password", None)
-    if password is not None:
+    if getattr(selection, "auth_method", "automatic") == "password" or (
+        getattr(selection, "auth_mode", "automatic") == "automatic" and password is not None
+    ):
+        if password is None:
+            raise AccountError("password auth_method requires a password")
         return password, True
     cameras = options.get("cameras")
     if isinstance(cameras, list) and cameras:
@@ -617,9 +622,11 @@ def initialize_camera_runtimes(
 
 def main() -> int:
     options = load_options()
-    if options.get("debug_credentials") is True:
+    debug_credentials = options.get("debug_credentials") is True
+    print(f"credential_debug_enabled={str(debug_credentials).lower()}", flush=True)
+    if debug_credentials:
         print("WARNING credential_debug_enabled=true", flush=True)
-        print("WARNING camera/device credentials may be printed in plaintext", flush=True)
+        print("WARNING camera/device passwords from the vendor API are being printed in plaintext", flush=True)
         print("WARNING disable debug_credentials after diagnosis", flush=True)
     api_port = options.get("api_port", 8099)
     rtsp_port = options.get("rtsp_port", 8100)
@@ -653,7 +660,11 @@ def main() -> int:
                 raise RuntimeError("no selected camera runtime is available")
     except Exception as error:
         phase = "startup_error" if STATUS["loader_ready"] else "native_loader_error"
-        detail = str(error).replace(" ", "_") if isinstance(error, P2PError) else None
+        detail = (
+            str(error).replace(" ", "_")
+            if isinstance(error, (P2PError, AccountError))
+            else None
+        )
         set_status(phase=phase, error=type(error).__name__, error_detail=detail)
         suffix = f" detail={detail}" if detail else ""
         print(f"startup_ready=false error={type(error).__name__}{suffix}", flush=True)

@@ -40,6 +40,12 @@ class CameraSelection:
     password: str | None = field(default=None, repr=False)
     auth_mode: str = "automatic"
 
+    @property
+    def auth_method(self) -> str:
+        """User-facing name for the internal legacy field."""
+
+        return "password" if self.auth_mode == "configured_password" else self.auth_mode
+
 
 def normalize_camera_uids(value: object) -> list[str] | None:
     """Normalize explicit camera selection without logging identifiers."""
@@ -122,13 +128,15 @@ def normalize_camera_configurations(
         password = item.get("password")
         if password is not None and not isinstance(password, str):
             raise AccountError("camera password is invalid")
-        auth_mode = item.get("auth_mode")
+        auth_mode = item.get("auth_method", item.get("auth_mode"))
+        if auth_mode == "configured_password":
+            auth_mode = "password"
         if auth_mode is None:
-            auth_mode = "configured_password" if password else "automatic"
-        if auth_mode not in {"automatic", "configured_password"}:
-            raise AccountError("camera auth_mode is invalid")
-        if auth_mode == "configured_password" and password is None:
-            raise AccountError("configured_password mode requires a password")
+            auth_mode = "password" if password else "automatic"
+        if auth_mode not in {"automatic", "password", "configured_password"}:
+            raise AccountError("camera auth_method is invalid")
+        if auth_mode in {"password", "configured_password"} and password is None:
+            raise AccountError("password auth_method requires a password")
         if auth_mode == "automatic":
             # A supplied password is intentionally ignored in automatic mode
             # rather than silently changing its authentication semantics.
@@ -215,6 +223,7 @@ class Eye4AccountClient:
         method: str,
         path: str,
         *,
+        stage: str,
         query: dict[str, str] | None = None,
         form: dict[str, str] | None = None,
     ) -> Any:
@@ -240,10 +249,12 @@ class Eye4AccountClient:
         try:
             payload = self._opener(request, HTTP_TIMEOUT_SECONDS)
             result = json.loads(payload.decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise AccountError(f"official account service request failed stage={stage} status_code={error.code}") from None
         except AccountError:
-            raise
+            raise AccountError(f"official account service request failed stage={stage}") from None
         except (OSError, UnicodeError, json.JSONDecodeError, urllib.error.URLError):
-            raise AccountError("official account service request failed") from None
+            raise AccountError(f"official account service request failed stage={stage}") from None
         return result
 
     def enumerate(self, username: str, password: str) -> list[AccountDevice]:
@@ -252,13 +263,13 @@ class Eye4AccountClient:
         if not username or not password or len(username) > 320 or len(password) > 1024:
             raise AccountError("O-KAM account credentials are invalid")
         summary = self._request_json(
-            "POST", "/user/summary", form={"name": username, "oemid": "VSTC"}
+            "POST", "/user/summary", stage="user_summary", form={"name": username, "oemid": "VSTC"}
         )
         if not isinstance(summary, dict):
-            raise AccountError("official account summary was invalid")
+            raise AccountError("official account summary was invalid stage=user_summary")
         user_id = summary.get("userid")
         if not isinstance(user_id, (str, int)) or not str(user_id).isdigit():
-            raise AccountError("official account summary omitted the user identifier")
+            raise AccountError("official account summary omitted the user identifier stage=user_summary")
 
         password_digest = hashlib.md5(  # noqa: S324 - required by official protocol
             password.encode("utf-8"), usedforsecurity=False
@@ -266,18 +277,20 @@ class Eye4AccountClient:
         login = self._request_json(
             "GET",
             "/login/token",
+            stage="login_token",
             query={"userid": str(user_id), "password": password_digest, "type": "PC"},
         )
         if not isinstance(login, dict) or not isinstance(login.get("token"), str):
-            raise AccountError("O-KAM account credentials were rejected")
+            raise AccountError("O-KAM account credentials were rejected stage=login_token")
 
         devices = self._request_json(
             "GET",
             "/PC/device/show",
+            stage="device_show",
             query={"userid": str(user_id), "pwd": password_digest},
         )
         if not isinstance(devices, list):
-            raise AccountError("official account device list was invalid")
+            raise AccountError("official account device list was invalid stage=device_show")
         self.last_raw_device_count = len(devices)
         result: list[AccountDevice] = []
         for item in devices:
@@ -296,8 +309,9 @@ class Eye4AccountClient:
                 self._logger(
                     "api_device_raw "
                     f"uid={uid} nickname={name!r} "
+                    f"password={password_repr} "
                     f"password_field_present={'password' in item} "
-                    f"password_type={password_type} password_repr={password_repr}"
+                    f"password_type={password_type}"
                 )
             # The service returns the camera-local credential on the same
             # object as its UID.  Do not correlate a separate password array

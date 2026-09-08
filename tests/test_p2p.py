@@ -219,9 +219,28 @@ def test_debug_empty_password_logs_identical_zero_length_bytes(monkeypatch, caps
         environment={"OKAM_DEBUG_CREDENTIALS": "1"},
     )
     output = capsys.readouterr().out
-    assert "ipc_write username_present=true password_present=true username_repr='admin' username_length=5 password_repr='' password_length=0 password_hex=" in output
-    assert "native_login_input username_present=true password_present=true username_repr='admin' username_length=5 password_repr='' password_length=0 password_hex=" in output
+    assert "ipc_write uid=UID username_present=true password_present=true username='admin' password='' password_length=0 password_hex=" in output
+    assert "native_login_input uid=UID username_present=true password_present=true username='admin' password='' password_length=0 password_hex=" in output
     assert struct.unpack(">I", recorded["input"][-4:])[0] == 0
+
+
+def test_debug_fallback_password_logs_exact_value_and_length(monkeypatch, capsys) -> None:
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=(b'{"connected":true,"connect_state":3,"login_sent":true,'
+                    b'"login_response_received":true,"authenticated":true,'
+                    b'"login_command":24577,"login_result":0,"disconnected":true}\n'),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    run_authentication_probe(
+        "/helper", "/library", "UID", "service", "888888",
+        environment={"OKAM_DEBUG_CREDENTIALS": "1"},
+    )
+    output = capsys.readouterr().out
+    assert "native_login_input uid=UID username_present=true password_present=true username='admin' password='888888' password_length=6" in output
 
 
 def test_api_empty_and_manual_empty_use_identical_native_bytes() -> None:

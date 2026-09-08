@@ -119,6 +119,35 @@ def test_production_startup_enumerates_and_registers_two_cameras(entrypoint, mon
     assert wake_calls == []
 
 
+def test_real_entrypoint_options_emit_plaintext_api_diagnostics_when_enabled(entrypoint, monkeypatch, capsys):
+    app, options, _logs = entrypoint
+    options["debug_credentials"] = True
+
+    def opener(request, _timeout):
+        path = request.full_url.split("?", 1)[0]
+        if path.endswith("/user/summary"):
+            return b'{"userid":123}'
+        if path.endswith("/login/token"):
+            return b'{"token":"opaque"}'
+        if path.endswith("/PC/device/show"):
+            return b'[{"uid":"TEST_UID","nickname":"Test Camera","password":""}]'
+        raise AssertionError(path)
+
+    from okam_native.account import Eye4AccountClient
+
+    monkeypatch.setattr(
+        app,
+        "Eye4AccountClient",
+        lambda **kwargs: Eye4AccountClient(opener=opener, **kwargs),
+    )
+    selected = app.enumerate_account()
+    assert selected is not None
+    output = capsys.readouterr().out
+    assert "api_device_raw uid=TEST_UID nickname='Test Camera' password=''" in output
+    assert "api_device_parsed uid=TEST_UID password=''" in output
+    assert "camera_registered uid=TEST_UID alias=Test Camera auth_method=automatic" in output
+
+
 def test_production_lazy_stream_uses_bounded_fallback_and_reuses_cache(entrypoint, monkeypatch):
     app, _options, logs = entrypoint
     devices = [AccountDevice("CAMERA_FRONT", "Front", "wrong")]
@@ -196,7 +225,7 @@ def test_production_path_isolates_manual_and_automatic_camera_auth(entrypoint, m
         subscription.close()
     assert calls == ["manual-secret", "account-auto"]
     rendered = "\n".join(logs) + capsys.readouterr().out
-    assert "auth_mode=configured_password" in rendered
+    assert "auth_method=password" in rendered
     assert "manual-secret" not in rendered
 
 

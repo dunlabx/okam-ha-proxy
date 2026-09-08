@@ -103,11 +103,21 @@ configuration.
      - uid: CAMERA_UID_1
        alias: Front Door
        password: ""
-       auth_mode: automatic
+       auth_method: automatic
      - uid: CAMERA_UID_2
        alias: Garage
    api_port: 8099
    rtsp_port: 8100
+   ```
+
+   To force exactly one configured empty password for a camera, use:
+
+   ```yaml
+   cameras:
+     - uid: CAMERA_UID
+       alias: Front Door
+       auth_method: password
+       password: ""
    ```
 
 6. Save the configuration and start the app. It is configured to start
@@ -125,11 +135,11 @@ must not be the O-KAM account password. You will enter the same token in the
 integration.
 
 The bridge normally obtains the camera-level password automatically from O-KAM.
-When `auth_mode` is omitted, a non-empty per-camera `password` keeps the legacy
+When `auth_method` is omitted, a non-empty per-camera `password` keeps the legacy
 strict override behavior and an absent or empty value selects automatic mode. In
 automatic mode an explicitly empty password returned by O-KAM is a real,
 bounded `empty_password` candidate before `888888`. To force one configured
-credential, set `auth_mode: configured_password`; this permits `password: ""`
+credential, set `auth_method: password`; this permits `password: ""`
 and tries exactly that value without cache or fallback candidates. The legacy
 top-level `camera_password` remains for older configurations without a non-empty
 `cameras` list. Camera passwords stay out of logs, API responses, diagnostics,

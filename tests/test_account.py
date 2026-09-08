@@ -68,6 +68,19 @@ def test_account_errors_never_include_credentials() -> None:
     assert "secret" not in str(caught.value)
 
 
+def test_account_errors_include_safe_stage_without_credentials() -> None:
+    def opener(request, _timeout: float) -> bytes:
+        if urlsplit(request.full_url).path == "/user/summary":
+            return b'{"userid":123}'
+        if urlsplit(request.full_url).path == "/login/token":
+            raise OSError("temporary vendor failure")
+        raise AssertionError("unexpected request")
+
+    with pytest.raises(AccountError, match=r"stage=login_token") as caught:
+        Eye4AccountClient(opener=opener).enumerate("u@example.com", "secret")
+    assert "secret" not in str(caught.value)
+
+
 def test_camera_uid_selection_is_exact_and_bounded_to_requested_subset() -> None:
     devices = [
         AccountDevice("A", "Front", "pw-a"),
@@ -162,10 +175,10 @@ def test_debug_account_log_distinguishes_missing_none_empty_and_space() -> None:
         "u@example.com", "p"
     )
     rendered = "\n".join(logs)
-    assert "uid=CAMERA_MISSING" in rendered and "password_repr=<MISSING>" in rendered
-    assert "uid=CAMERA_NONE" in rendered and "password_type=NoneType password_repr=None" in rendered
-    assert "uid=CAMERA_EMPTY" in rendered and "password_repr=''" in rendered
-    assert "uid=CAMERA_SPACE" in rendered and "password_repr=' '" in rendered
+    assert "uid=CAMERA_MISSING" in rendered and "password=<MISSING>" in rendered
+    assert "uid=CAMERA_NONE" in rendered and "password=None" in rendered
+    assert "uid=CAMERA_EMPTY" in rendered and "password='' " in rendered
+    assert "uid=CAMERA_SPACE" in rendered and "password=' '" in rendered
     assert "password_length" not in rendered
 
 
@@ -195,28 +208,51 @@ def test_per_camera_password_override_is_optional_and_preserves_exact_secret() -
     assert "manual-secret" not in repr(selected[0])
 
 
-def test_camera_auth_mode_defaults_and_explicit_empty_are_distinct() -> None:
+def test_camera_auth_method_defaults_and_explicit_empty_are_distinct() -> None:
     devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
     selected = configured_camera_selections(
         devices,
         {"cameras": [
             {"uid": "A", "password": "manual-secret"},
-            {"uid": "B", "password": "", "auth_mode": "configured_password"},
+            {"uid": "B", "password": "", "auth_method": "password"},
         ]},
     )
-    assert [(item.auth_mode, item.password) for item in selected] == [
-        ("configured_password", "manual-secret"),
-        ("configured_password", ""),
+    assert [(item.auth_method, item.password) for item in selected] == [
+        ("password", "manual-secret"),
+        ("password", ""),
     ]
 
 
-def test_automatic_auth_mode_ignores_supplied_password() -> None:
+def test_automatic_auth_method_ignores_supplied_password() -> None:
     devices = [AccountDevice("A", "Front", "account-a")]
     selected = configured_camera_selections(
-        devices, {"cameras": [{"uid": "A", "password": "ignored", "auth_mode": "automatic"}]}
+        devices, {"cameras": [{"uid": "A", "password": "ignored", "auth_method": "automatic"}]}
     )
-    assert selected[0].auth_mode == "automatic"
+    assert selected[0].auth_method == "automatic"
     assert selected[0].password is None
+
+
+def test_legacy_auth_mode_values_migrate_to_auth_method() -> None:
+    devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
+    selected = configured_camera_selections(
+        devices,
+        {"cameras": [
+            {"uid": "A", "auth_mode": "automatic", "password": "ignored"},
+            {"uid": "B", "auth_mode": "configured_password", "password": "manual"},
+        ]},
+    )
+    assert [item.auth_method for item in selected] == ["automatic", "password"]
+    assert [item.password for item in selected] == [None, "manual"]
+
+
+def test_missing_auth_method_migrates_nonempty_and_empty_passwords() -> None:
+    devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
+    selected = configured_camera_selections(
+        devices,
+        {"cameras": [{"uid": "A", "password": "manual"}, {"uid": "B", "password": ""}]},
+    )
+    assert [item.auth_method for item in selected] == ["password", "automatic"]
+    assert [item.password for item in selected] == ["manual", None]
 
 
 def test_camera_configuration_rejects_duplicate_uids_and_aliases() -> None:

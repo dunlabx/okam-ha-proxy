@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.9
+
+- Replaces the user-facing camera `auth_mode` setting with `auth_method:
+  automatic|password`, while migrating legacy values safely.
+- Makes the temporary `debug_credentials` output directly show raw and parsed
+  API camera passwords, every candidate, and the final native login value.
+- Adds safe AccountError stage diagnostics for vendor API failures.
+
 ## 1.2.8
 
 - Adds temporary `debug_credentials` diagnostics for tracing camera/device

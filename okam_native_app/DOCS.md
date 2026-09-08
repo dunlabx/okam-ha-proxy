@@ -17,7 +17,7 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | `account_password` | Password of the O-KAM account |
 | `camera_password` | Legacy account-wide camera password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
-| `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`, and optional `auth_mode`; empty means all account cameras |
+| `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`, and optional `auth_method`; empty means all account cameras |
 | `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
@@ -31,11 +31,11 @@ lists the selected camera names and UIDs. Use that response to verify the
 selection without exposing account or camera passwords.
 
 The app normally obtains the camera-level credential automatically and has a
-compatibility fallback for accounts that omit it. When `auth_mode` is omitted,
-a non-empty `password` selects strict configured mode; an absent or empty value
+compatibility fallback for accounts that omit it. When `auth_method` is omitted,
+a non-empty `password` selects strict password mode; an absent or empty value
 selects automatic mode. Automatic mode treats an API password field that is
 present but empty as the intentional `empty_password` candidate before
-`888888`. Set `auth_mode: configured_password` to use exactly the configured
+`888888`. Set `auth_method: password` to use exactly the configured
 value, including `password: ""`; this disables cache and every fallback
 candidate for that camera. The legacy top-level `camera_password` remains
 available for older configurations without a non-empty `cameras` list. Camera

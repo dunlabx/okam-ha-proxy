@@ -53,10 +53,10 @@ per-camera value keeps automatic authentication. The legacy top-level
 `cameras` list. These values are not the O-KAM account password or bridge API
 token. Do not post them in an issue.
 
-Each camera mapping may set `auth_mode` to `automatic` or
-`configured_password`. If omitted, a non-empty `password` is strict and an
+Each camera mapping may set `auth_method` to `automatic` or
+`password`. If omitted, a non-empty `password` is strict and an
 empty or absent value is automatic. Automatic mode preserves an API-provided
-empty password as the bounded `empty_password` candidate. Configured mode uses
+empty password as the bounded `empty_password` candidate. Password mode uses
 exactly the supplied value, including `password: ""`, and does not try cache or
 fallback credentials.
 

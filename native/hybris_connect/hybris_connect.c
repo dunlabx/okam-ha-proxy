@@ -47,11 +47,11 @@ static bool debug_credentials_enabled(void) {
     return value != NULL && strcmp(value, "1") == 0;
 }
 
-static void print_debug_credential(const char *stage, const char *password) {
+static void print_debug_credential(const char *stage, const char *uid, const char *password) {
     static const char hex[] = "0123456789abcdef";
     size_t length = strlen(password);
-    fprintf(stderr, "%s username_present=true password_present=true "
-                    "username_repr='admin' username_length=5 password_repr='", stage);
+    fprintf(stderr, "%s uid=%s username_present=true password_present=true "
+                    "username='admin' password='", stage, uid);
     for (size_t i = 0; i < length; ++i) {
         unsigned char byte = (unsigned char)password[i];
         if (byte == '\\' || byte == '\'') {
@@ -413,8 +413,6 @@ int main(int argc, char **argv) {
     }
 
     void *client = client_create(uid, NULL);
-    memset(uid, 0, strlen(uid));
-    free(uid);
     int state = -1;
     bool connected = false;
     bool disconnected = false;
@@ -436,8 +434,8 @@ int main(int argc, char **argv) {
         connected = state == CONNECT_STATE_ONLINE;
         if (connected && authenticate) {
             if (debug_credentials_enabled()) {
-                print_debug_credential("ipc_read", device_password);
-                print_debug_credential("native_login_input", device_password);
+                print_debug_credential("ipc_read", uid, device_password);
+                print_debug_credential("native_login_input", uid, device_password);
             } else {
                 fprintf(stderr, "native_login_input username_present=true "
                                 "password_present=true");
@@ -487,6 +485,8 @@ int main(int argc, char **argv) {
         if (connected) disconnected = client_disconnect(client);
         client_destroy(client);
     }
+    memset(uid, 0, strlen(uid));
+    free(uid);
     memset(service_parameter, 0, strlen(service_parameter));
     free(service_parameter);
     if (device_password != NULL) {

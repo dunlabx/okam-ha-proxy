@@ -15,10 +15,12 @@ from .p2p import AuthenticationResult, P2PError
 
 FALLBACK_SOURCE = "fallback_888888"
 EMPTY_PASSWORD_SOURCE = "empty_password"
-CONFIGURED_SOURCE = "configured_password"
+MANUAL_SOURCE = "manual_password"
+# Kept as an import-compatible alias for callers of the 1.2.x library.
+CONFIGURED_SOURCE = MANUAL_SOURCE
 ACCOUNT_SOURCE = "account_device_password"
 KNOWN_SOURCES = frozenset(
-    {CONFIGURED_SOURCE, ACCOUNT_SOURCE, EMPTY_PASSWORD_SOURCE, FALLBACK_SOURCE}
+    {ACCOUNT_SOURCE, EMPTY_PASSWORD_SOURCE, FALLBACK_SOURCE}
 )
 
 
@@ -60,8 +62,8 @@ def build_candidates(
     An explicitly present empty associated password is represented by the
     symbolic ``empty_password`` source and is tried before the fixed fallback.
     The source UID is metadata only; plaintext values never enter logs/cache.
-    ``strict_configured`` returns exactly one configured candidate and bypasses
-    all automatic sources for a per-camera override.
+    ``strict_configured`` returns exactly one manual candidate and bypasses all
+    automatic sources for a per-camera override.
     The original two-argument form remains supported for callers/tests.
     """
 
@@ -72,7 +74,7 @@ def build_candidates(
             raise P2PError("configured camera credential is invalid")
         # Explicit per-camera mode is intentionally bounded to one candidate;
         # an empty string is a real credential and must remain representable.
-        return (CredentialCandidate(CONFIGURED_SOURCE, configured_password),)
+        return (CredentialCandidate(MANUAL_SOURCE, configured_password),)
     if configured_password not in (None, ""):
         if not isinstance(configured_password, str):
             raise P2PError("configured camera credential is invalid")
@@ -238,20 +240,21 @@ class CameraAuthenticator:
             self._label(candidate).replace(" ", "_") for candidate in candidates
         )
         mode = (
-            "configured_password"
-            if len(candidates) == 1 and candidates[0].source == CONFIGURED_SOURCE
+            "password"
+            if len(candidates) == 1 and candidates[0].source == MANUAL_SOURCE
             else "automatic"
         )
         self._logger(
-            f"camera_auth_candidates uid={uid} auth_mode={mode} "
+            f"camera_auth_candidates uid={uid} auth_method={mode} "
             f"candidate_count={len(candidates)} sources={sources}"
         )
         if debug_credentials:
             for candidate in candidates:
                 source_uid = candidate.source_uid or ""
                 self._logger(
-                    f"auth_candidate uid={uid} auth_mode={mode} source={candidate.source} "
-                    f"source_uid={source_uid} password_repr={candidate.password!r} "
+                    "camera_auth_candidate "
+                    f"uid={uid} source={candidate.source} "
+                    f"source_uid={source_uid} password={candidate.password!r} "
                     f"password_length={len(candidate.password)}"
                 )
 
@@ -304,7 +307,7 @@ class CameraAuthenticator:
                         f"result=success login_result={result.login_result}"
                     )
                     persisted = False
-                    if candidate.source != CONFIGURED_SOURCE:
+                    if candidate.source != MANUAL_SOURCE:
                         persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "
@@ -388,7 +391,7 @@ class CameraAuthenticator:
                         f"result=success login_result={result.login_result}"
                     )
                     persisted = False
-                    if candidate.source != CONFIGURED_SOURCE:
+                    if candidate.source != MANUAL_SOURCE:
                         persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "

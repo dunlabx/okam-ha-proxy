@@ -89,7 +89,7 @@ def test_empty_password_logging_is_symbolic_and_bounded(tmp_path) -> None:
         "UID_A", candidates, lambda _candidate: _result(authenticated=True)
     )
     rendered = "\n".join(logs)
-    assert "camera_auth_candidates uid=UID_A auth_mode=automatic candidate_count=2 sources=empty_password,fallback_888888" in rendered
+    assert "camera_auth_candidates uid=UID_A auth_method=automatic candidate_count=2 sources=empty_password,fallback_888888" in rendered
     assert "candidate=empty_password" in rendered
     assert "password=" not in rendered
 
@@ -236,7 +236,29 @@ def test_explicit_configured_empty_password_is_single_candidate(tmp_path) -> Non
     )
     assert selected.source == CONFIGURED_SOURCE
     assert calls == [CONFIGURED_SOURCE]
-    assert calls == [CONFIGURED_SOURCE]
+
+
+def test_automatic_deduplicates_api_empty_and_fallback_values() -> None:
+    assert [item.source for item in build_candidates(AccountDevice("UID_A", "A", "", True))] == [
+        EMPTY_PASSWORD_SOURCE,
+        FALLBACK_SOURCE,
+    ]
+    assert [(item.source, item.password) for item in build_candidates(
+        AccountDevice("UID_A", "A", "888888", True)
+    )] == [(ACCOUNT_SOURCE, "888888")]
+
+
+def test_manual_candidate_debug_log_contains_exact_password(tmp_path) -> None:
+    logs = []
+    candidates = build_candidates(
+        AccountDevice("UID_A", "A", "account", True), "manual-secret", strict_configured=True
+    )
+    _manager(tmp_path, logs).authenticate(
+        "UID_A", candidates, lambda _candidate: _result(authenticated=True), debug_credentials=True
+    )
+    rendered = "\n".join(logs)
+    assert "camera_auth_candidate uid=UID_A source=manual_password" in rendered
+    assert "password='manual-secret'" in rendered
 
 
 def test_strict_configured_password_creates_one_candidate() -> None:
@@ -278,8 +300,8 @@ def test_strict_configured_password_logging_is_symbolic(tmp_path) -> None:
         "UID_A", candidates, lambda _candidate: _result(authenticated=True)
     )
     rendered = "\n".join(logs)
-    assert "auth_mode=configured_password" in rendered
-    assert "sources=configured_password" in rendered
+    assert "auth_method=password" in rendered
+    assert "sources=manual_password" in rendered
     assert "manual-secret" not in rendered
     assert "password_length" not in rendered
 

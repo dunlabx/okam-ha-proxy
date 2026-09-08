@@ -14,11 +14,11 @@ Do not open a public issue for an undisclosed vulnerability.
 
 - Select only the intended camera UIDs in the `cameras` list; additional account
   cameras are never initialized when an explicit non-empty list is configured.
-- A camera mapping may include an optional `password` and `auth_mode`. With the
+- A camera mapping may include an optional `password` and `auth_method`. With the
   mode omitted, non-empty values select strict per-camera authentication and
   absent or empty values select automatic authentication. Automatic mode may
   intentionally try the symbolic empty password returned by the camera API. An
-  explicit `auth_mode: configured_password` permits `password: ""` and uses
+  explicit `auth_method: password` permits `password: ""` and uses
   exactly that value without fallback or cache. These values are never persisted
   or exposed during normal operation.
 - `debug_credentials` is a temporary diagnosis switch. When enabled, exact

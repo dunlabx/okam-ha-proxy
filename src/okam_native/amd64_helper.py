@@ -37,10 +37,11 @@ def _debug_credentials_enabled() -> bool:
     return os.environ.get("OKAM_DEBUG_CREDENTIALS") == "1"
 
 
-def _credential_debug_line(stage: str, password: str) -> str:
+def _credential_debug_line(stage: str, password: str, uid: str | None = None) -> str:
+    uid_field = f"uid={uid} " if uid is not None else ""
     return (
-        f"{stage} username_present=true password_present=true "
-        f"username_repr='admin' username_length=5 password_repr={password!r} "
+        f"{stage} {uid_field}username_present=true password_present=true "
+        f"username='admin' password={password!r} "
         f"password_length={len(password)} "
         f"password_hex={password.encode('utf-8').hex()}"
     )
@@ -129,7 +130,7 @@ def run(
     accepted_password = device_password or ""
     if mode != "connect":
         if _debug_credentials_enabled():
-            print(_credential_debug_line("native_login_input", accepted_password), file=sys.stderr, flush=True)
+            print(_credential_debug_line("native_login_input", accepted_password, uid), file=sys.stderr, flush=True)
         else:
             length = " password_length=0" if not accepted_password else ""
             print(
@@ -317,7 +318,7 @@ def main() -> int:
         service = _read_field()
         password = _read_field(allow_empty=True) if modes[option] != "connect" else None
         if password is not None and _debug_credentials_enabled():
-            print(_credential_debug_line("ipc_read", password), file=sys.stderr, flush=True)
+            print(_credential_debug_line("ipc_read", password, uid), file=sys.stderr, flush=True)
         code, result = run(
             modes[option], uid, service, password, credential_index=credential_index
         )
