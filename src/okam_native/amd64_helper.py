@@ -31,6 +31,21 @@ LIVE_START_RESPONSE_SECONDS = 10.0
 _running = True
 
 
+def _debug_credentials_enabled() -> bool:
+    import os
+
+    return os.environ.get("OKAM_DEBUG_CREDENTIALS") == "1"
+
+
+def _credential_debug_line(stage: str, password: str) -> str:
+    return (
+        f"{stage} username_present=true password_present=true "
+        f"username_repr='admin' username_length=5 password_repr={password!r} "
+        f"password_length={len(password)} "
+        f"password_hex={password.encode('utf-8').hex()}"
+    )
+
+
 def _stop(_signum: int, _frame: object) -> None:
     global _running
     _running = False
@@ -113,13 +128,16 @@ def run(
     accepted_user = "admin"
     accepted_password = device_password or ""
     if mode != "connect":
-        length = " password_length=0" if not accepted_password else ""
-        print(
-            "native_login_input username_present=true "
-            f"password_present={str(device_password is not None).lower()}" + length,
-            file=sys.stderr,
-            flush=True,
-        )
+        if _debug_credentials_enabled():
+            print(_credential_debug_line("native_login_input", accepted_password), file=sys.stderr, flush=True)
+        else:
+            length = " password_length=0" if not accepted_password else ""
+            print(
+                "native_login_input username_present=true "
+                f"password_present={str(device_password is not None).lower()}" + length,
+                file=sys.stderr,
+                flush=True,
+            )
     try:
         session.connect(timeout=55.0)
         result.update(connected=True, connect_state=3, connect_path=session.connect_path)
@@ -298,6 +316,8 @@ def main() -> int:
         uid = _read_field()
         service = _read_field()
         password = _read_field(allow_empty=True) if modes[option] != "connect" else None
+        if password is not None and _debug_credentials_enabled():
+            print(_credential_debug_line("ipc_read", password), file=sys.stderr, flush=True)
         code, result = run(
             modes[option], uid, service, password, credential_index=credential_index
         )

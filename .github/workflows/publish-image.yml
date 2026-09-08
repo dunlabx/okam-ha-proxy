@@ -157,7 +157,9 @@ jobs:
           docker cp "$cid:/opt/okam/okam_native/auth.py" /tmp/auth.py
           docker cp "$cid:/opt/okam/okam_native/account.py" /tmp/account.py
           grep -q 'camera_auth_attempt' /tmp/auth.py
+          grep -q 'debug_credentials' /tmp/auth.py
           grep -q 'configured_camera_selections' /tmp/account.py
+          grep -q 'api_device_raw' /tmp/account.py
           grep -q 'open_authenticated_stream_process' /tmp/app_entrypoint.py
 
   prepare:

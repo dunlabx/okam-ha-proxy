@@ -117,14 +117,38 @@ def _field(value: str, *, allow_empty: bool = False) -> bytes:
     return struct.pack(">I", len(encoded)) + encoded
 
 
-def _log_native_login_input(password: str) -> None:
-    """Expose framing presence/length without ever rendering a credential."""
+def _debug_credentials_enabled(environment: dict[str, str] | None) -> bool:
+    return bool(environment and environment.get("OKAM_DEBUG_CREDENTIALS") == "1")
 
+
+def _credential_debug_line(stage: str, password: str) -> str:
+    encoded = password.encode("utf-8")
+    return (
+        f"{stage} username_present=true password_present=true "
+        f"username_repr='admin' username_length=5 password_repr={password!r} "
+        f"password_length={len(password)} "
+        f"password_hex={encoded.hex()}"
+    )
+
+
+def _log_native_login_input(
+    password: str, environment: dict[str, str] | None = None
+) -> None:
+    """Expose exact credential bytes only for the explicitly enabled diagnosis."""
+
+    if _debug_credentials_enabled(environment):
+        print(_credential_debug_line("native_login_input", password), flush=True)
+        return
     length = " password_length=0" if not password else ""
     print(
         "native_login_input username_present=true password_present=true" + length,
         flush=True,
     )
+
+
+def _log_ipc_write(password: str, environment: dict[str, str]) -> None:
+    if _debug_credentials_enabled(environment):
+        print(_credential_debug_line("ipc_write", password), flush=True)
 
 
 def select_camera_password(
@@ -324,7 +348,8 @@ def run_authentication_probe(
 ) -> AuthenticationResult:
     """Connect and prove camera-level login without placing secrets in argv."""
 
-    _log_native_login_input(device_password)
+    _log_native_login_input(device_password, environment)
+    _log_ipc_write(device_password, environment)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--authenticate"]
@@ -363,6 +388,11 @@ def run_authentication_probe(
         raise P2PError("native camera authentication helper returned an invalid result")
     if completed.returncode not in {0, 4, 5}:
         raise P2PError("native camera authentication helper failed safely")
+    if _debug_credentials_enabled(environment):
+        print(
+            f"camera_auth_result login_command={command} login_result={result}",
+            flush=True,
+        )
     return AuthenticationResult(
         connected=payload["connected"],
         connect_state=state,
@@ -389,7 +419,8 @@ def run_stream_probe(
 ) -> StreamProbeResult:
     """Prove bounded H.264 receipt without persisting or returning frame bytes."""
 
-    _log_native_login_input(device_password)
+    _log_native_login_input(device_password, environment)
+    _log_ipc_write(device_password, environment)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-test"]
@@ -508,7 +539,8 @@ def run_snapshot_probe(
 ) -> SnapshotProbeResult:
     """Decode one native H.264 frame to an in-memory JPEG and disconnect."""
 
-    _log_native_login_input(device_password)
+    _log_native_login_input(device_password, environment)
+    _log_ipc_write(device_password, environment)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     helper_process: subprocess.Popen[bytes] | None = None
     decoder_process: subprocess.Popen[bytes] | None = None
@@ -628,7 +660,8 @@ def open_stream_process(
 ) -> subprocess.Popen[bytes]:
     """Start the graceful raw-H.264 helper with all sensitive input on stdin."""
 
-    _log_native_login_input(device_password)
+    _log_native_login_input(device_password, environment)
+    _log_ipc_write(device_password, environment)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-stdout"]
@@ -669,7 +702,8 @@ def open_authenticated_stream_process(
 ) -> tuple[subprocess.Popen[bytes], AuthenticationResult]:
     """Start a stream and wait for the helper's pre-media auth handshake."""
 
-    _log_native_login_input(device_password)
+    _log_native_login_input(device_password, environment)
+    _log_ipc_write(device_password, environment)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
         command = [helper, library, "--stream-stdout", "--credential-index", str(credential_index)]

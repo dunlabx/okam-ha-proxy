@@ -14,6 +14,7 @@ from typing import Any, Callable
 ACCOUNT_ORIGIN = "https://api.eye4.cn"
 MAX_RESPONSE_BYTES = 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 15.0
+_MISSING = object()
 
 
 class AccountError(RuntimeError):
@@ -37,6 +38,7 @@ class CameraSelection:
     device: AccountDevice
     alias: str | None = None
     password: str | None = field(default=None, repr=False)
+    auth_mode: str = "automatic"
 
 
 def normalize_camera_uids(value: object) -> list[str] | None:
@@ -86,14 +88,14 @@ def select_account_devices(
 
 def normalize_camera_configurations(
     value: object,
-) -> list[tuple[str, str | None, str | None]] | None:
+) -> list[tuple[str, str | None, str | None, str]] | None:
     """Parse the Supervisor-supported ``cameras`` list of small mappings."""
 
     if value is None:
         return None
     if not isinstance(value, list):
         raise AccountError("cameras must be a list")
-    result: list[tuple[str, str | None, str | None]] = []
+    result: list[tuple[str, str | None, str | None, str]] = []
     seen_uids: set[str] = set()
     seen_aliases: set[str] = set()
     for item in value:
@@ -120,11 +122,20 @@ def normalize_camera_configurations(
         password = item.get("password")
         if password is not None and not isinstance(password, str):
             raise AccountError("camera password is invalid")
-        # Empty and absent values both select automatic authentication.
-        password = password or None
-        result.append((uid, alias, password))
-    uid_keys = {uid.casefold() for uid, _alias, _password in result}
-    for uid, alias, _password in result:
+        auth_mode = item.get("auth_mode")
+        if auth_mode is None:
+            auth_mode = "configured_password" if password else "automatic"
+        if auth_mode not in {"automatic", "configured_password"}:
+            raise AccountError("camera auth_mode is invalid")
+        if auth_mode == "configured_password" and password is None:
+            raise AccountError("configured_password mode requires a password")
+        if auth_mode == "automatic":
+            # A supplied password is intentionally ignored in automatic mode
+            # rather than silently changing its authentication semantics.
+            password = None
+        result.append((uid, alias, password, auth_mode))
+    uid_keys = {uid.casefold() for uid, _alias, _password, _mode in result}
+    for uid, alias, _password, _mode in result:
         if alias is not None and alias.casefold() in uid_keys and alias.casefold() != uid.casefold():
             raise AccountError("camera alias collides with another camera UID")
     return result
@@ -150,7 +161,7 @@ def configured_camera_selections(
             legacy_alias = options.get("camera_id")
             alias = legacy_alias.strip() if isinstance(legacy_alias, str) else None
             current = [
-                (uid, alias if len(legacy_uids) == 1 else None, None)
+                (uid, alias if len(legacy_uids) == 1 else None, None, "automatic")
                 for uid in legacy_uids
             ]
     if not current:
@@ -163,11 +174,11 @@ def configured_camera_selections(
             raise AccountError("official account returned duplicate camera UIDs")
         by_uid[key] = device
     selected: list[CameraSelection] = []
-    for uid, alias, camera_password in current:
+    for uid, alias, camera_password, auth_mode in current:
         device = by_uid.get(uid.casefold())
         if device is None:
             raise AccountError("one or more configured camera UIDs were not found in the account")
-        selected.append(CameraSelection(device, alias, camera_password))
+        selected.append(CameraSelection(device, alias, camera_password, auth_mode))
     return selected
 
 
@@ -187,8 +198,16 @@ def _open_request(request: urllib.request.Request, timeout: float) -> bytes:
 class Eye4AccountClient:
     """Reproduce the three official WebViewer account requests over HTTPS."""
 
-    def __init__(self, *, opener: OpenRequest = _open_request) -> None:
+    def __init__(
+        self,
+        *,
+        opener: OpenRequest = _open_request,
+        debug_credentials: bool = False,
+        logger: Callable[[str], None] = print,
+    ) -> None:
         self._opener = opener
+        self._debug_credentials = debug_credentials
+        self._logger = logger
         self.last_raw_device_count = 0
 
     def _request_json(
@@ -268,6 +287,18 @@ class Eye4AccountClient:
             if not isinstance(uid, str) or not 4 <= len(uid) <= 256:
                 continue
             name = item.get("nickname")
+            if self._debug_credentials:
+                raw_password = item.get("password") if "password" in item else _MISSING
+                password_type = (
+                    type(raw_password).__name__ if raw_password is not _MISSING else "<MISSING>"
+                )
+                password_repr = repr(raw_password) if raw_password is not _MISSING else "<MISSING>"
+                self._logger(
+                    "api_device_raw "
+                    f"uid={uid} nickname={name!r} "
+                    f"password_field_present={'password' in item} "
+                    f"password_type={password_type} password_repr={password_repr}"
+                )
             # The service returns the camera-local credential on the same
             # object as its UID.  Do not correlate a separate password array
             # by position: malformed/missing objects are simply ignored.

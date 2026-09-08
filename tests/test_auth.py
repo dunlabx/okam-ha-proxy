@@ -218,6 +218,24 @@ def test_explicit_password_is_authoritative(tmp_path) -> None:
         lambda candidate: (calls.append(candidate.source) or _result(authenticated=True)),
     )
     assert selected.source == CONFIGURED_SOURCE
+
+
+def test_explicit_configured_empty_password_is_single_candidate(tmp_path) -> None:
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret"),
+        "",
+        strict_configured=True,
+    )
+    assert [(item.source, item.password) for item in candidates] == [
+        (CONFIGURED_SOURCE, "")
+    ]
+    calls = []
+    selected, _ = _manager(tmp_path).authenticate(
+        "UID_A", candidates,
+        lambda candidate: (calls.append(candidate.source) or _result(authenticated=True)),
+    )
+    assert selected.source == CONFIGURED_SOURCE
+    assert calls == [CONFIGURED_SOURCE]
     assert calls == [CONFIGURED_SOURCE]
 
 

@@ -53,6 +53,13 @@ per-camera value keeps automatic authentication. The legacy top-level
 `cameras` list. These values are not the O-KAM account password or bridge API
 token. Do not post them in an issue.
 
+Each camera mapping may set `auth_mode` to `automatic` or
+`configured_password`. If omitted, a non-empty `password` is strict and an
+empty or absent value is automatic. Automatic mode preserves an API-provided
+empty password as the bounded `empty_password` candidate. Configured mode uses
+exactly the supplied value, including `password: ""`, and does not try cache or
+fallback credentials.
+
 The older startup message `camera_device_credential_was_unavailable` is handled
 by version 1.2.0 and later; update the app before further troubleshooting.
 
@@ -139,6 +146,12 @@ snapshot_created=true width=... height=... bytes=... clean_disconnect=true
 
 Disable the diagnostic option again afterward. Leaving it enabled causes an
 additional camera wake and media test every time the app starts.
+
+For a deeper one-time diagnosis, set `debug_credentials: true`. The app prints
+exact camera/device password bytes at API, IPC, and native login boundaries and
+warns at startup. It never prints the account password, API token, or session
+secrets. Disable it immediately after collecting logs and protect those logs as
+credentials.
 
 ## Information to include in an issue
 

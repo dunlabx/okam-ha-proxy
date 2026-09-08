@@ -200,6 +200,39 @@ def test_empty_password_survives_exact_container_stdin_serialization_and_parser(
     assert "connected" in output  # helper emitted a valid response
 
 
+def test_debug_empty_password_logs_identical_zero_length_bytes(monkeypatch, capsys) -> None:
+    recorded = {}
+
+    def run(command, **kwargs):
+        recorded["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(
+            command, 0,
+            stdout=(b'{"connected":true,"connect_state":3,"login_sent":true,'
+                    b'"login_response_received":true,"authenticated":true,'
+                    b'"login_command":24577,"login_result":0,"disconnected":true}\n'),
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    run_authentication_probe(
+        "/helper", "/library", "UID", "service", "",
+        environment={"OKAM_DEBUG_CREDENTIALS": "1"},
+    )
+    output = capsys.readouterr().out
+    assert "ipc_write username_present=true password_present=true username_repr='admin' username_length=5 password_repr='' password_length=0 password_hex=" in output
+    assert "native_login_input username_present=true password_present=true username_repr='admin' username_length=5 password_repr='' password_length=0 password_hex=" in output
+    assert struct.unpack(">I", recorded["input"][-4:])[0] == 0
+
+
+def test_api_empty_and_manual_empty_use_identical_native_bytes() -> None:
+    from okam_native.p2p import _field
+
+    api_bytes = _field("UID") + _field("service") + _field("", allow_empty=True)
+    manual_bytes = _field("UID") + _field("service") + _field("", allow_empty=True)
+    assert api_bytes == manual_bytes
+    assert api_bytes[-4:] == b"\x00\x00\x00\x00"
+
+
 def test_stream_probe_returns_only_sanitized_metrics(monkeypatch) -> None:
     recorded = {}
 

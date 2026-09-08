@@ -42,6 +42,36 @@ static uintptr_t stack_guard;
 static volatile sig_atomic_t stream_running = 1;
 extern void __stack_chk_fail(void);
 
+static bool debug_credentials_enabled(void) {
+    const char *value = getenv("OKAM_DEBUG_CREDENTIALS");
+    return value != NULL && strcmp(value, "1") == 0;
+}
+
+static void print_debug_credential(const char *stage, const char *password) {
+    static const char hex[] = "0123456789abcdef";
+    size_t length = strlen(password);
+    fprintf(stderr, "%s username_present=true password_present=true "
+                    "username_repr='admin' username_length=5 password_repr='", stage);
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char byte = (unsigned char)password[i];
+        if (byte == '\\' || byte == '\'') {
+            fprintf(stderr, "\\\\%c", byte);
+        } else if (byte >= 0x20 && byte < 0x7f) {
+            fputc(byte, stderr);
+        } else {
+            fprintf(stderr, "\\x%c%c", hex[byte >> 4], hex[byte & 0x0f]);
+        }
+    }
+    fputs("' password_length=", stderr);
+    fprintf(stderr, "%zu password_hex=", length);
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char byte = (unsigned char)password[i];
+        fprintf(stderr, "%c%c", hex[byte >> 4], hex[byte & 0x0f]);
+    }
+    fputc('\n', stderr);
+    fflush(stderr);
+}
+
 static void stop_streaming(int signal_number) {
     (void)signal_number;
     stream_running = 0;
@@ -405,11 +435,16 @@ int main(int argc, char **argv) {
         state = client_connect(client, CONNECT_TYPE_NORMAL, service_parameter, 0);
         connected = state == CONNECT_STATE_ONLINE;
         if (connected && authenticate) {
-            fprintf(stderr, "native_login_input username_present=true "
-                            "password_present=true");
-            if (device_password[0] == '\0') fprintf(stderr, " password_length=0");
-            fputc('\n', stderr);
-            fflush(stderr);
+            if (debug_credentials_enabled()) {
+                print_debug_credential("ipc_read", device_password);
+                print_debug_credential("native_login_input", device_password);
+            } else {
+                fprintf(stderr, "native_login_input username_present=true "
+                                "password_present=true");
+                if (device_password[0] == '\0') fprintf(stderr, " password_length=0");
+                fputc('\n', stderr);
+                fflush(stderr);
+            }
             login_sent = client_login(client, "admin", device_password);
             if (login_sent) {
                 login_response_received = await_login_response(

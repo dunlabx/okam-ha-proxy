@@ -196,7 +196,12 @@ def enumerate_account() -> list[CameraSelection] | None:
         set_status(configuration_required=True)
         return None
     set_status(phase="enumerating_account", configuration_required=False)
-    client = Eye4AccountClient()
+    debug_credentials = options.get("debug_credentials") is True
+    client = (
+        Eye4AccountClient(debug_credentials=True)
+        if debug_credentials
+        else Eye4AccountClient()
+    )
     try:
         devices = client.enumerate(username, password)
     finally:
@@ -226,6 +231,14 @@ def enumerate_account() -> list[CameraSelection] | None:
             f"password_length={len(item.device_password)}",
             flush=True,
         )
+        if debug_credentials:
+            print(
+                f"api_device_parsed uid={item.uid} "
+                "password_type=str "
+                f"password_repr={item.device_password!r} "
+                f"password_length={len(item.device_password)}",
+                flush=True,
+            )
     for item in selected:
         print(
             f"camera_registered uid={item.device.uid} "
@@ -235,8 +248,12 @@ def enumerate_account() -> list[CameraSelection] | None:
     return selected
 
 
-def p2p_environment() -> dict[str, str]:
+def p2p_environment(debug_credentials: bool = False) -> dict[str, str]:
     environment = os.environ.copy()
+    if debug_credentials:
+        environment["OKAM_DEBUG_CREDENTIALS"] = "1"
+    else:
+        environment.pop("OKAM_DEBUG_CREDENTIALS", None)
     if RUNTIME_ARCH == "amd64":
         return environment
     environment.update(
@@ -299,6 +316,7 @@ def run_p2p_acceptance(selection: CameraSelection) -> None:
     if not enabled and not auth_enabled and not stream_enabled:
         return
     configured_password, strict_configured = _camera_password_override(selection, options)
+    debug_credentials = options.get("debug_credentials") is True
     candidates = (
         build_candidates(
             device,
@@ -306,6 +324,7 @@ def run_p2p_acceptance(selection: CameraSelection) -> None:
             account_device_uid=device.uid,
             account_devices=ACCOUNT_DEVICES,
             strict_configured=strict_configured,
+            debug_credentials=debug_credentials,
         )
         if auth_enabled
         else ()
@@ -338,22 +357,23 @@ def run_p2p_acceptance(selection: CameraSelection) -> None:
                         return run_snapshot_probe(
                             str(CONNECT_HELPER), str(LIBRARY), str(FFMPEG),
                             client_id, service_parameter, candidate.password,
-                            environment=p2p_environment(), credential_index=0,
+                            environment=p2p_environment(debug_credentials), credential_index=0,
                         )
                     if stream_enabled:
                         return run_stream_probe(
                             str(CONNECT_HELPER), str(LIBRARY), client_id,
                             service_parameter, candidate.password,
-                            environment=p2p_environment(), credential_index=0,
+                            environment=p2p_environment(debug_credentials), credential_index=0,
                         )
                     return run_authentication_probe(
                         str(CONNECT_HELPER), str(LIBRARY), client_id,
                         service_parameter, candidate.password,
-                        environment=p2p_environment(), credential_index=0,
+                        environment=p2p_environment(debug_credentials), credential_index=0,
                     )
 
                 _selected, result = AUTHENTICATOR.authenticate(
-                    device.uid, candidates, attempt_candidate
+                    device.uid, candidates, attempt_candidate,
+                    debug_credentials=debug_credentials,
                 )
             else:
                 result = run_connect_probe(
@@ -481,12 +501,14 @@ def configure_bridge(
     alias = selection.alias
     idle_timeout = options.get("idle_timeout_seconds", 120)
     configured_password, strict_configured = _camera_password_override(selection, options)
+    debug_credentials = options.get("debug_credentials") is True
     candidates = build_candidates(
         device,
         configured_password,
         account_device_uid=device.uid,
         account_devices=account_devices if account_devices is not None else ACCOUNT_DEVICES,
         strict_configured=strict_configured,
+        debug_credentials=debug_credentials,
     )
     if not isinstance(api_token, str) or not 16 <= len(api_token) <= 1024:
         set_status(configuration_required=True, camera_ready=False, phase="api_token_required")
@@ -520,10 +542,11 @@ def configure_bridge(
                 client_id,
                 service_parameter,
                 candidate.password,
-                environment=p2p_environment(),
+                environment=p2p_environment(debug_credentials),
                 credential_index=0,
             ),
             discard=lambda failed: _terminate_stream_process(failed),
+            debug_credentials=debug_credentials,
         )
         set_status(
             camera_authenticated=True,
@@ -594,6 +617,10 @@ def initialize_camera_runtimes(
 
 def main() -> int:
     options = load_options()
+    if options.get("debug_credentials") is True:
+        print("WARNING credential_debug_enabled=true", flush=True)
+        print("WARNING camera/device credentials may be printed in plaintext", flush=True)
+        print("WARNING disable debug_credentials after diagnosis", flush=True)
     api_port = options.get("api_port", 8099)
     rtsp_port = options.get("rtsp_port", 8100)
     if (

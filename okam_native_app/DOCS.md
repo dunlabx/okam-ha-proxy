@@ -17,7 +17,8 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | `account_password` | Password of the O-KAM account |
 | `camera_password` | Legacy account-wide camera password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
-| `cameras` | List of mappings with required `uid`, optional `alias`, and optional `password`; empty means all account cameras |
+| `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`, and optional `auth_mode`; empty means all account cameras |
+| `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
@@ -30,13 +31,21 @@ lists the selected camera names and UIDs. Use that response to verify the
 selection without exposing account or camera passwords.
 
 The app normally obtains the camera-level credential automatically and has a
-compatibility fallback for accounts that omit it. Add an optional `password` to
-one camera mapping for an independent override. Missing or empty values keep
-automatic authentication; a non-empty value enables strict mode for that
-camera and disables cache, account, cross-camera, empty-password, and
-`888888` fallbacks. The legacy top-level `camera_password` remains available
-for older configurations without a non-empty `cameras` list. Camera passwords
-never appear in the API, logs, cache, or HACS.
+compatibility fallback for accounts that omit it. When `auth_mode` is omitted,
+a non-empty `password` selects strict configured mode; an absent or empty value
+selects automatic mode. Automatic mode treats an API password field that is
+present but empty as the intentional `empty_password` candidate before
+`888888`. Set `auth_mode: configured_password` to use exactly the configured
+value, including `password: ""`; this disables cache and every fallback
+candidate for that camera. The legacy top-level `camera_password` remains
+available for older configurations without a non-empty `cameras` list. Camera
+passwords never appear in the API, logs, cache, or HACS during normal operation.
+
+`debug_credentials: true` is a temporary diagnosis switch. It emits exact
+camera/device password values at the API, IPC, and native login boundaries so
+an administrator can compare bytes. It never emits the O-KAM account password,
+API token, or session secrets. The app prints startup warnings while it is
+enabled; disable it and treat captured logs as secret material afterward.
 
 Leave `run_connect_test`, `run_auth_test`, `run_stream_test`, and
 `run_snapshot_test` disabled during normal operation. They are bounded

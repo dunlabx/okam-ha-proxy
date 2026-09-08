@@ -89,6 +89,7 @@ configuration.
    | `camera_password` | Legacy account-wide override; normally leave blank |
    | `api_token` | A new random secret of at least 16 characters that you choose |
    | `cameras` | Optional list of `{uid, alias, password}` mappings; empty exposes all account cameras |
+   | `debug_credentials` | Temporary diagnostic mode; leave `false` except during a controlled local test |
    | `api_port` | HTTP API port, default `8099` |
    | `rtsp_port` | RTSP-over-TCP port, default `8100` |
    | `idle_timeout_seconds` | `120` seconds is recommended |
@@ -102,6 +103,7 @@ configuration.
      - uid: CAMERA_UID_1
        alias: Front Door
        password: ""
+       auth_mode: automatic
      - uid: CAMERA_UID_2
        alias: Garage
    api_port: 8099
@@ -123,12 +125,22 @@ must not be the O-KAM account password. You will enter the same token in the
 integration.
 
 The bridge normally obtains the camera-level password automatically from O-KAM.
-Leave a camera mapping's `password` absent or empty for this mode. A non-empty
-per-camera `password` is a strict override: exactly that value is tried for that
-camera, with no cache, account, cross-camera, empty-password, or `888888`
-fallback. The legacy top-level `camera_password` remains for older configurations
-without a non-empty `cameras` list. Camera passwords stay out of logs, API
-responses, diagnostics, cache, and HACS.
+When `auth_mode` is omitted, a non-empty per-camera `password` keeps the legacy
+strict override behavior and an absent or empty value selects automatic mode. In
+automatic mode an explicitly empty password returned by O-KAM is a real,
+bounded `empty_password` candidate before `888888`. To force one configured
+credential, set `auth_mode: configured_password`; this permits `password: ""`
+and tries exactly that value without cache or fallback candidates. The legacy
+top-level `camera_password` remains for older configurations without a non-empty
+`cameras` list. Camera passwords stay out of logs, API responses, diagnostics,
+cache, and HACS unless the temporary diagnostic option below is deliberately
+enabled.
+
+For a controlled diagnosis, set `debug_credentials: true`, restart the app,
+capture the startup and native helper logs, and disable it immediately
+afterward. The option prints camera/device passwords in plaintext, never the
+O-KAM account password, API token, or session secrets; treat those logs as
+secrets and do not share them.
 
 ### 3. Install the Home Assistant integration
 

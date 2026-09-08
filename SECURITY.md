@@ -14,10 +14,18 @@ Do not open a public issue for an undisclosed vulnerability.
 
 - Select only the intended camera UIDs in the `cameras` list; additional account
   cameras are never initialized when an explicit non-empty list is configured.
-- A camera mapping may include an optional `password`. Leave it absent or empty
-  for automatic authentication. A non-empty value is a strict per-camera
-  override and is never persisted in the authentication cache or exposed by
-  logs, API responses, diagnostics, or HACS.
+- A camera mapping may include an optional `password` and `auth_mode`. With the
+  mode omitted, non-empty values select strict per-camera authentication and
+  absent or empty values select automatic authentication. Automatic mode may
+  intentionally try the symbolic empty password returned by the camera API. An
+  explicit `auth_mode: configured_password` permits `password: ""` and uses
+  exactly that value without fallback or cache. These values are never persisted
+  or exposed during normal operation.
+- `debug_credentials` is a temporary diagnosis switch. When enabled, exact
+  camera/device passwords are printed at controlled diagnostic boundaries;
+  startup warns that logs contain plaintext credentials. It never prints the
+  O-KAM account password, API token, bearer token, cookies, or session secrets.
+  Disable it immediately after a controlled test and protect any captured log.
 - Use a unique random local API token of at least 16 characters.
 - Never post account names, passwords, API tokens, camera identifiers, packet
   captures, media, or unredacted logs.

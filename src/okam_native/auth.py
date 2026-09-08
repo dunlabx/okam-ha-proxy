@@ -49,6 +49,7 @@ def build_candidates(
     account_device_uid: str | None = None,
     account_devices: Iterable[object] | None = None,
     strict_configured: bool = False,
+    debug_credentials: bool = False,
 ) -> tuple[CredentialCandidate, ...]:
     """Build bounded candidates from the authenticated account response.
 
@@ -66,12 +67,17 @@ def build_candidates(
 
     candidates: list[CredentialCandidate] = []
     seen: set[str] = set()
+    if strict_configured:
+        if not isinstance(configured_password, str):
+            raise P2PError("configured camera credential is invalid")
+        # Explicit per-camera mode is intentionally bounded to one candidate;
+        # an empty string is a real credential and must remain representable.
+        return (CredentialCandidate(CONFIGURED_SOURCE, configured_password),)
     if configured_password not in (None, ""):
         if not isinstance(configured_password, str):
             raise P2PError("configured camera credential is invalid")
         configured = CredentialCandidate(CONFIGURED_SOURCE, configured_password)
-        if strict_configured:
-            return (configured,)
+
         candidates.append(configured)
     associated = account_device_password
     associated_present: bool | None = None
@@ -221,7 +227,13 @@ class CameraAuthenticator:
             label += f" source_uid={candidate.source_uid}"
         return label
 
-    def _log_candidates(self, uid: str, candidates: tuple[CredentialCandidate, ...]) -> None:
+    def _log_candidates(
+        self,
+        uid: str,
+        candidates: tuple[CredentialCandidate, ...],
+        *,
+        debug_credentials: bool = False,
+    ) -> None:
         sources = ",".join(
             self._label(candidate).replace(" ", "_") for candidate in candidates
         )
@@ -234,12 +246,22 @@ class CameraAuthenticator:
             f"camera_auth_candidates uid={uid} auth_mode={mode} "
             f"candidate_count={len(candidates)} sources={sources}"
         )
+        if debug_credentials:
+            for candidate in candidates:
+                source_uid = candidate.source_uid or ""
+                self._logger(
+                    f"auth_candidate uid={uid} auth_mode={mode} source={candidate.source} "
+                    f"source_uid={source_uid} password_repr={candidate.password!r} "
+                    f"password_length={len(candidate.password)}"
+                )
 
     def authenticate(
         self,
         uid: str,
         candidates: Iterable[CredentialCandidate],
         attempt: Attempt,
+        *,
+        debug_credentials: bool = False,
     ) -> tuple[CredentialCandidate, AuthenticationResult]:
         available = tuple(candidates)
         cached_source = self.cache.get(uid)
@@ -252,7 +274,7 @@ class CameraAuthenticator:
         if cached is not None:
             ordered.append((cached, True))
         ordered.extend((candidate, False) for candidate in available if candidate is not cached)
-        self._log_candidates(uid, available)
+        self._log_candidates(uid, available, debug_credentials=debug_credentials)
         results: list[int | None] = []
         with self._lock_for(uid):
             for number, (candidate, cached) in enumerate(ordered, start=1):
@@ -314,6 +336,8 @@ class CameraAuthenticator:
         candidates: Iterable[CredentialCandidate],
         attempt: ResourceAttempt[Resource],
         discard: Callable[[Resource], None] | None = None,
+        *,
+        debug_credentials: bool = False,
     ) -> tuple[CredentialCandidate, AuthenticationResult, Resource]:
         """Authenticate while retaining the successful session resource.
 
@@ -333,7 +357,7 @@ class CameraAuthenticator:
         if cached is not None:
             ordered.append((cached, True))
         ordered.extend((candidate, False) for candidate in available if candidate is not cached)
-        self._log_candidates(uid, available)
+        self._log_candidates(uid, available, debug_credentials=debug_credentials)
         results: list[int | None] = []
         with self._lock_for(uid):
             for number, (candidate, cached) in enumerate(ordered, start=1):

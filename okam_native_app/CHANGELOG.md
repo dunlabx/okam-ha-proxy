@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.8
+
+- Adds temporary `debug_credentials` diagnostics for tracing camera/device
+  password bytes from `/PC/device/show` through IPC and native login. Account
+  passwords, API tokens, and session secrets remain excluded.
+- Adds explicit per-camera `auth_mode`, including a bounded configured empty
+  password and backward-compatible automatic-mode resolution.
+
 ## 1.2.7
 
 - Adds an optional per-camera password override. Non-empty values use strict
