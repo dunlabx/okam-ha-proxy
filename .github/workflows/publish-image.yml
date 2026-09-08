@@ -156,6 +156,8 @@ jobs:
           docker cp "$cid:/opt/okam/app_entrypoint.py" /tmp/app_entrypoint.py
           docker cp "$cid:/opt/okam/okam_native/auth.py" /tmp/auth.py
           docker cp "$cid:/opt/okam/okam_native/account.py" /tmp/account.py
+          docker cp "$cid:/opt/okam/standby.h264" /tmp/standby.h264
+          test -s /tmp/standby.h264
           grep -q 'camera_auth_attempt' /tmp/auth.py
           grep -q 'debug_credentials' /tmp/auth.py
           grep -q 'manual_password' /tmp/auth.py

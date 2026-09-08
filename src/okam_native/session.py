@@ -6,6 +6,7 @@ import json
 import queue
 import subprocess
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ class SessionStatus:
     clean_disconnect: bool | None
     last_error: str | None
     media_ready: bool = False
+    standby: bool = False
 
 
 class StreamSubscription:
@@ -66,12 +68,19 @@ class StreamSubscription:
 
 
 class NativeStreamSession:
-    def __init__(self, starter: StreamStarter, *, idle_timeout: float = 120.0) -> None:
+    def __init__(
+        self,
+        starter: StreamStarter,
+        *,
+        idle_timeout: float = 120.0,
+        standby_frame: bytes | None = None,
+        standby_interval: float = 1.0,
+    ) -> None:
         self._starter = starter
         self.idle_timeout = idle_timeout
         self._lock = threading.RLock()
         self._process: subprocess.Popen[bytes] | None = None
-        self._subscribers: dict[str, queue.Queue[bytes | object]] = {}
+        self._subscribers: dict[str, tuple[queue.Queue[bytes | object], bool]] = {}
         self._idle_timer: threading.Timer | None = None
         self._stderr = bytearray()
         self._clean_disconnect: bool | None = None
@@ -81,16 +90,24 @@ class NativeStreamSession:
         self._sps = b""
         self._pps = b""
         self._keyframe = b""
+        self._standby_frame = standby_frame or b""
+        self._standby_interval = max(0.1, standby_interval)
+        self._standby_thread: threading.Thread | None = None
         self._closed = False
+        if self._standby_frame:
+            self._note_media(self._standby_frame + ANNEX_B_START)
+            self._standby_media = (self._sps, self._pps, self._keyframe)
+        else:
+            self._standby_media = (b"", b"", b"")
 
-    def acquire(self) -> StreamSubscription:
+    def acquire(self, *, passive: bool = False) -> StreamSubscription:
         with self._lock:
             if self._closed:
                 raise P2PError("native stream session is closed")
             if self._idle_timer is not None:
                 self._idle_timer.cancel()
                 self._idle_timer = None
-            if self._process is None or self._process.poll() is not None:
+            if not passive and (self._process is None or self._process.poll() is not None):
                 self._start_locked()
             subscription_id = uuid.uuid4().hex
             chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
@@ -99,18 +116,37 @@ class NativeStreamSession:
             preamble = self._preamble()
             if preamble:
                 chunks.put_nowait(preamble)
-            self._subscribers[subscription_id] = chunks
+            self._subscribers[subscription_id] = (chunks, passive)
+            if passive and self._process is None:
+                self._put_chunk(chunks, self._standby_frame)
+                self._ensure_standby_thread_locked()
             return StreamSubscription(self, subscription_id, chunks)
 
     def release(self, subscription_id: str) -> None:
         with self._lock:
             self._subscribers.pop(subscription_id, None)
-            if not self._subscribers and self._process is not None and not self._closed:
+            if (
+                not self._active_subscribers_locked()
+                and self._process is not None
+                and not self._closed
+            ):
                 if self._idle_timer is not None:
                     self._idle_timer.cancel()
                 self._idle_timer = threading.Timer(self.idle_timeout, self._stop_if_idle)
                 self._idle_timer.daemon = True
                 self._idle_timer.start()
+
+    def _active_subscribers_locked(self) -> bool:
+        return any(not passive for _chunks, passive in self._subscribers.values())
+
+    def _ensure_standby_thread_locked(self) -> None:
+        if not self._standby_frame or self._closed:
+            return
+        if self._standby_thread is None or not self._standby_thread.is_alive():
+            self._standby_thread = threading.Thread(
+                target=self._standby_loop, name="okam-standby", daemon=True
+            )
+            self._standby_thread.start()
 
     def snapshot(self, ffmpeg: str, *, timeout: float = 90.0) -> tuple[bytes, int, int]:
         subscription = self.acquire()
@@ -229,6 +265,10 @@ class NativeStreamSession:
                 clean_disconnect=self._clean_disconnect,
                 last_error=self._last_error,
                 media_ready=self._media_ready,
+                standby=(
+                    self._process is None
+                    and any(passive for _chunks, passive in self._subscribers.values())
+                ),
             )
 
     def parameter_sets(self) -> tuple[bytes, bytes]:
@@ -244,6 +284,10 @@ class NativeStreamSession:
                 self._idle_timer.cancel()
                 self._idle_timer = None
             process = self._process
+            subscribers = tuple(chunks for chunks, _passive in self._subscribers.values())
+            self._subscribers.clear()
+        for chunks in subscribers:
+            self._put_chunk(chunks, _END)
         self._terminate(process)
 
     def _start_locked(self) -> None:
@@ -280,34 +324,30 @@ class NativeStreamSession:
                 with self._lock:
                     self._media_ready = True
                     self._note_media(chunk)
-                    subscribers = tuple(self._subscribers.values())
+                    subscribers = tuple(
+                        chunks for chunks, _passive in self._subscribers.values()
+                    )
                 for chunks in subscribers:
-                    try:
-                        chunks.put_nowait(chunk)
-                    except queue.Full:
-                        try:
-                            chunks.get_nowait()
-                            chunks.put_nowait(chunk)
-                        except (queue.Empty, queue.Full):
-                            pass
+                    self._put_chunk(chunks, chunk)
         finally:
             process.wait()
             stderr_thread.join(timeout=2)
             with self._lock:
-                subscribers = tuple(self._subscribers.values())
-                self._subscribers.clear()
+                active_subscribers = tuple(
+                    chunks for chunks, passive in self._subscribers.values() if not passive
+                )
+                for subscription_id, (_chunks, passive) in tuple(self._subscribers.items()):
+                    if not passive:
+                        self._subscribers.pop(subscription_id, None)
                 if self._process is process:
                     self._process = None
+                self._restore_standby_media_locked()
                 self._parse_summary_locked(process.returncode)
-            for chunks in subscribers:
-                try:
-                    chunks.put_nowait(_END)
-                except queue.Full:
-                    try:
-                        chunks.get_nowait()
-                        chunks.put_nowait(_END)
-                    except (queue.Empty, queue.Full):
-                        pass
+            for chunks in active_subscribers:
+                self._put_chunk(chunks, _END)
+            with self._lock:
+                if self._subscribers:
+                    self._ensure_standby_thread_locked()
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         assert process.stderr is not None
@@ -338,10 +378,46 @@ class NativeStreamSession:
     def _stop_if_idle(self) -> None:
         with self._lock:
             self._idle_timer = None
-            if self._subscribers or self._closed:
+            if self._active_subscribers_locked() or self._closed:
                 return
             process = self._process
         self._terminate(process)
+
+    def _standby_loop(self) -> None:
+        while True:
+            with self._lock:
+                if self._closed or not self._standby_frame:
+                    return
+                if self._process is not None and self._process.poll() is None:
+                    should_emit = False
+                    passive_subscribers: tuple[queue.Queue[bytes | object], ...] = ()
+                else:
+                    passive_subscribers = tuple(
+                        chunks for chunks, passive in self._subscribers.values() if passive
+                    )
+                    if not passive_subscribers:
+                        return
+                    should_emit = True
+            if should_emit:
+                for chunks in passive_subscribers:
+                    self._put_chunk(chunks, self._standby_frame)
+            time.sleep(self._standby_interval)
+
+    @staticmethod
+    def _put_chunk(chunks: queue.Queue[bytes | object], value: bytes | object) -> None:
+        try:
+            chunks.put_nowait(value)
+        except queue.Full:
+            try:
+                chunks.get_nowait()
+                chunks.put_nowait(value)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _restore_standby_media_locked(self) -> None:
+        self._scan.clear()
+        self._sps, self._pps, self._keyframe = self._standby_media
+        self._media_ready = False
 
     @staticmethod
     def _terminate(process: subprocess.Popen[bytes] | None) -> None:

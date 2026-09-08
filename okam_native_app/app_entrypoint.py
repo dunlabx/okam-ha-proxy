@@ -64,6 +64,7 @@ CONNECT_HELPER = Path(
     else "/opt/okam/okam-hybris-connect"
 )
 FFMPEG = Path("/usr/bin/ffmpeg")
+STANDBY_FRAME = Path("/opt/okam/standby.h264")
 LIBRARY = Path("/dev/null") if RUNTIME_ARCH == "amd64" else VENDOR / "libOKSMARTPPCS.so"
 STATUS: dict[str, object] = {
     "service": "okam-native-bridge",
@@ -561,7 +562,15 @@ def configure_bridge(
         )
         return process
 
-    session = NativeStreamSession(start_stream, idle_timeout=float(idle_timeout))
+    try:
+        standby_frame = STANDBY_FRAME.read_bytes()
+    except (OSError, ValueError):
+        standby_frame = None
+    session = NativeStreamSession(
+        start_stream,
+        idle_timeout=float(idle_timeout),
+        standby_frame=standby_frame,
+    )
     camera_id = alias or device.uid
     bridge = CameraBridge(
         camera_id=camera_id,

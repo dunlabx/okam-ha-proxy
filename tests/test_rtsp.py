@@ -101,6 +101,7 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
 
         def __init__(self) -> None:
             self.acquires = 0
+            self.passive = None
             self.subscription = Subscription()
 
         def status(self) -> SessionStatus:
@@ -109,8 +110,9 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
         def parameter_sets(self):
             return (b"", b"")
 
-        def acquire(self):
+        def acquire(self, *, passive=False):
             self.acquires += 1
+            self.passive = passive
             return self.subscription
 
     session = Session()
@@ -143,6 +145,7 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
         while session.acquires < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert session.acquires == 1
+        assert session.passive is True
         client.sendall(b"TEARDOWN rtsp://127.0.0.1/UID_RTSP RTSP/1.0\r\nCSeq: 4\r\n\r\n")
     finally:
         client.close()

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.10
+
+- Keeps RTSP consumers on a passive standby H.264 frame until an active live
+  viewer starts the shared native camera session.
+- Uses an explicit Home Assistant dropdown for the HACS authentication method.
+
 ## 1.2.9
 
 - Replaces the user-facing camera `auth_mode` setting with `auth_method:

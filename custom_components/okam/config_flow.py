@@ -54,7 +54,9 @@ def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                     options=[
                         {"value": "automatic", "label": "Automatic"},
                         {"value": "password", "label": "Password"},
-                    ]
+                    ],
+                    translation_key="auth_method",
+                    mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
             vol.Optional(

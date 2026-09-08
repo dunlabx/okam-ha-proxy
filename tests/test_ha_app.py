@@ -113,7 +113,7 @@ def test_hacs_repository_layout_and_manifest_are_installable() -> None:
         "version",
     }
     assert manifest["domain"] == "okam"
-    assert manifest["version"] == "1.2.9"
+    assert manifest["version"] == "1.2.10"
     assert manifest["documentation"].startswith("https://github.com/dunlabx/")
     assert manifest["issue_tracker"].startswith("https://github.com/dunlabx/")
     integration_dirs = sorted(
@@ -183,7 +183,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     integration_init = (component / "__init__.py").read_text(encoding="utf-8")
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
-    assert '"version": "1.2.9"' in manifest
+    assert '"version": "1.2.10"' in manifest
     assert "http://homeassistant.local:8099" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera
@@ -200,6 +200,7 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     assert "SelectSelector" in config_flow
     assert '"value": "automatic", "label": "Automatic"' in config_flow
     assert '"value": "password", "label": "Password"' in config_flow
+    assert "SelectSelectorMode.DROPDOWN" in config_flow
     assert "CONF_CAMERA_PASSWORD" in config_flow
     assert "Camera password" in strings
     assert "camera_uid" in strings

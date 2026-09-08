@@ -93,6 +93,8 @@ class CameraBridge:
         session = self.session.status()
         if session.running:
             state = "streaming" if session.media_ready else "waking"
+        elif session.standby:
+            state = "standby"
         else:
             state = "idle"
         return {

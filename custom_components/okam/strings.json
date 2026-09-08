@@ -1,5 +1,13 @@
 {
   "title": "O-KAM Native Bridge",
+  "selector": {
+    "auth_method": {
+      "options": {
+        "automatic": "Automatic",
+        "password": "Password"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {

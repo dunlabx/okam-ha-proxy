@@ -362,7 +362,11 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                 self._reply(454, cseq)
                 return True
             try:
-                self._subscription = bridge.session.acquire()
+                # RTSP is Frigate's always-on consumer. Keep it passive so a
+                # sleeping battery camera is not woken merely by a DESCRIBE/
+                # PLAY request; an active HTTP live-view subscriber promotes
+                # the shared session to the native stream.
+                self._subscription = bridge.session.acquire(passive=True)
             except (P2PError, OSError, RuntimeError):
                 self._reply(503, cseq)
                 return True

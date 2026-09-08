@@ -93,6 +93,17 @@ RUN cd "/tmp/FFmpeg-n${FFMPEG_VERSION}" \
     && mkdir -p /out/ffmpeg/bin \
     && cp ffmpeg /out/ffmpeg/bin/ffmpeg
 
+FROM debian:bookworm-slim AS standby-build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /out
+RUN ffmpeg -hide_banner -loglevel error \
+    -f lavfi -i "color=c=black:s=640x480:r=1" \
+    -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Camera standby':fontcolor=white:fontsize=32:x=(w-text_w)/2:y=(h-text_h)/2" \
+    -frames:v 1 -c:v libx264 -preset ultrafast -tune stillimage \
+    -pix_fmt yuv420p -f h264 /out/standby.h264
+
 FROM python:3.12-slim-bookworm AS runtime-base
 ARG BUILD_VERSION=1.2.3
 ARG BUILD_ARCH
@@ -106,6 +117,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ffmpeg-build /out/ffmpeg/bin/ffmpeg /usr/bin/ffmpeg
+COPY --from=standby-build /out/standby.h264 /opt/okam/standby.h264
 COPY tools/fetch_official_sdk.py /opt/okam/tools/fetch_official_sdk.py
 COPY docs/vendor-artifacts.json /opt/okam/docs/vendor-artifacts.json
 COPY src/okam_native /opt/okam/okam_native

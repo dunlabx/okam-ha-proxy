@@ -147,3 +147,62 @@ def test_no_preamble_is_sent_before_parameter_sets_are_seen() -> None:
     session._note_media(_unit(1, b"inter") + _unit(1, b"more"))
 
     assert session._preamble() == b""
+
+
+def test_passive_subscription_never_starts_native_helper_and_emits_standby() -> None:
+    starts = []
+    frame = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"standby")
+    session = NativeStreamSession(
+        lambda: (starts.append(True) or FakeProcess()),
+        standby_frame=frame,
+        standby_interval=0.01,
+    )  # type: ignore[arg-type]
+    subscription = session.acquire(passive=True)
+    try:
+        assert starts == []
+        assert session.status().standby is True
+        assert next(iter(subscription)) == frame
+    finally:
+        subscription.close()
+        session.close()
+
+
+def test_active_subscription_promotes_shared_passive_session_and_cleanup_restores_standby() -> None:
+    processes: list[FakeProcess] = []
+    frame = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"standby")
+
+    def start() -> FakeProcess:
+        process = FakeProcess()
+        processes.append(process)
+        return process
+
+    session = NativeStreamSession(start, idle_timeout=0.02, standby_frame=frame, standby_interval=0.01)  # type: ignore[arg-type]
+    passive = session.acquire(passive=True)
+    active = session.acquire()
+    assert len(processes) == 1
+    assert session.status().standby is False
+    active.close()
+    deadline = time.monotonic() + 2
+    while processes[0].poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert processes[0].poll() == 0
+    assert session.status().standby is True
+    passive.close()
+    session.close()
+
+
+def test_native_process_end_keeps_passive_subscriber_alive() -> None:
+    process = FakeProcess()
+    frame = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"standby")
+    session = NativeStreamSession(lambda: process, idle_timeout=0.02, standby_frame=frame, standby_interval=0.01)  # type: ignore[arg-type]
+    passive = session.acquire(passive=True)
+    active = session.acquire()
+    process.stdout.chunks.put(b"live")
+    process.stdout.chunks.put(None)
+    active.close()
+    deadline = time.monotonic() + 2
+    while not session.status().standby and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.status().standby is True
+    passive.close()
+    session.close()
