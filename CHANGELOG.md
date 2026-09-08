@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.7
+
+- Adds an optional per-camera password override. Non-empty values use strict
+  configured-password authentication for that UID without fallback or caching.
+- Keeps missing and empty per-camera passwords in automatic authentication mode.
+
 ## 1.2.6
 
 - Preserves an explicitly empty camera password through Python, amd64, and

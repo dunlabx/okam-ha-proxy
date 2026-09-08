@@ -35,6 +35,7 @@ schema:
   cameras:
     - uid: str
       alias: "str?"
+      password: password?
   api_port: "int(1,65535)"
   rtsp_port: "int(1,65535)"
   idle_timeout_seconds: "int(10,600)"

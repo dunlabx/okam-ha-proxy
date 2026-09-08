@@ -15,7 +15,7 @@ from .p2p import AuthenticationResult, P2PError
 
 FALLBACK_SOURCE = "fallback_888888"
 EMPTY_PASSWORD_SOURCE = "empty_password"
-CONFIGURED_SOURCE = "configured_camera_password"
+CONFIGURED_SOURCE = "configured_password"
 ACCOUNT_SOURCE = "account_device_password"
 KNOWN_SOURCES = frozenset(
     {CONFIGURED_SOURCE, ACCOUNT_SOURCE, EMPTY_PASSWORD_SOURCE, FALLBACK_SOURCE}
@@ -48,6 +48,7 @@ def build_candidates(
     *,
     account_device_uid: str | None = None,
     account_devices: Iterable[object] | None = None,
+    strict_configured: bool = False,
 ) -> tuple[CredentialCandidate, ...]:
     """Build bounded candidates from the authenticated account response.
 
@@ -58,6 +59,8 @@ def build_candidates(
     An explicitly present empty associated password is represented by the
     symbolic ``empty_password`` source and is tried before the fixed fallback.
     The source UID is metadata only; plaintext values never enter logs/cache.
+    ``strict_configured`` returns exactly one configured candidate and bypasses
+    all automatic sources for a per-camera override.
     The original two-argument form remains supported for callers/tests.
     """
 
@@ -66,7 +69,10 @@ def build_candidates(
     if configured_password not in (None, ""):
         if not isinstance(configured_password, str):
             raise P2PError("configured camera credential is invalid")
-        candidates.append(CredentialCandidate(CONFIGURED_SOURCE, configured_password))
+        configured = CredentialCandidate(CONFIGURED_SOURCE, configured_password)
+        if strict_configured:
+            return (configured,)
+        candidates.append(configured)
     associated = account_device_password
     associated_present: bool | None = None
     if isinstance(associated, dict):
@@ -219,8 +225,14 @@ class CameraAuthenticator:
         sources = ",".join(
             self._label(candidate).replace(" ", "_") for candidate in candidates
         )
+        mode = (
+            "configured_password"
+            if len(candidates) == 1 and candidates[0].source == CONFIGURED_SOURCE
+            else "automatic"
+        )
         self._logger(
-            f"camera_auth_candidates uid={uid} candidate_count={len(candidates)} sources={sources}"
+            f"camera_auth_candidates uid={uid} auth_mode={mode} "
+            f"candidate_count={len(candidates)} sources={sources}"
         )
 
     def authenticate(
@@ -269,7 +281,9 @@ class CameraAuthenticator:
                         f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
                         f"result=success login_result={result.login_result}"
                     )
-                    persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
+                    persisted = False
+                    if candidate.source != CONFIGURED_SOURCE:
+                        persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "
                         f"source_uid={candidate.source_uid or ''} "
@@ -349,7 +363,9 @@ class CameraAuthenticator:
                         f"camera_auth_attempt uid={uid} candidate={label} attempt={number} "
                         f"result=success login_result={result.login_result}"
                     )
-                    persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
+                    persisted = False
+                    if candidate.source != CONFIGURED_SOURCE:
+                        persisted = self.cache.set(uid, candidate.source, candidate.source_uid)
                     self._logger(
                         f"camera_auth_selected uid={uid} candidate={candidate.source} "
                         f"source_uid={candidate.source_uid or ''} "

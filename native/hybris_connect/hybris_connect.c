@@ -405,10 +405,10 @@ int main(int argc, char **argv) {
         state = client_connect(client, CONNECT_TYPE_NORMAL, service_parameter, 0);
         connected = state == CONNECT_STATE_ONLINE;
         if (connected && authenticate) {
-            fprintf(stderr,
-                    "native_login_input username_present=true password_present=true "
-                    "password_length=%zu\n",
-                    strlen(device_password));
+            fprintf(stderr, "native_login_input username_present=true "
+                            "password_present=true");
+            if (device_password[0] == '\0') fprintf(stderr, " password_length=0");
+            fputc('\n', stderr);
             fflush(stderr);
             login_sent = client_login(client, "admin", device_password);
             if (login_sent) {

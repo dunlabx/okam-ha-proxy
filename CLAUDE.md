@@ -40,8 +40,13 @@ points:
 
 - Canonical camera identity is the account UID. An alias is user-friendly
   metadata only; HACS may accept either UID or alias but stores UID.
-- The add-on accepts dynamic `cameras` entries with required `uid` and optional
-  alias. Empty means all account cameras.
+- The add-on accepts dynamic `cameras` entries with required `uid`, optional
+  alias, and optional `password`. Empty means all account cameras.
+- A missing or empty per-camera password selects automatic authentication. A
+  non-empty per-camera password is strict for that UID: it is the sole
+  candidate, bypasses cache/account/cross-camera/empty/fallback credentials,
+  and is never persisted or logged. HACS remains bridge-facing and never stores
+  camera credentials.
 - Account device passwords are resolved independently per UID. Known passwords
   from other devices in the same authenticated account may be boundedly
   cross-tried when the association is unreliable.

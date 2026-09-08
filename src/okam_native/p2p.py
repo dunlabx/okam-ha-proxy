@@ -120,9 +120,9 @@ def _field(value: str, *, allow_empty: bool = False) -> bytes:
 def _log_native_login_input(password: str) -> None:
     """Expose framing presence/length without ever rendering a credential."""
 
+    length = " password_length=0" if not password else ""
     print(
-        "native_login_input username_present=true password_present=true "
-        f"password_length={len(password)}",
+        "native_login_input username_present=true password_present=true" + length,
         flush=True,
     )
 

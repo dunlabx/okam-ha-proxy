@@ -262,7 +262,27 @@ def _terminate_stream_process(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=5)
 
 
-def run_p2p_acceptance(device: AccountDevice) -> None:
+def _camera_password_override(
+    selection: CameraSelection, options: dict[str, object]
+) -> tuple[object, bool]:
+    """Return the per-camera override and whether it is strict.
+
+    The legacy top-level ``camera_password`` remains available only when the
+    newer ``cameras`` list is absent or empty.  A configured per-camera value
+    is intentionally isolated and never enters the automatic candidate set.
+    """
+
+    password = getattr(selection, "password", None)
+    if password is not None:
+        return password, True
+    cameras = options.get("cameras")
+    if isinstance(cameras, list) and cameras:
+        return None, False
+    return options.get("camera_password"), False
+
+
+def run_p2p_acceptance(selection: CameraSelection) -> None:
+    device = selection.device
     options = load_options()
     enabled = options.get("run_connect_test") is True
     auth_enabled = options.get("run_auth_test") is True
@@ -278,12 +298,14 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
     )
     if not enabled and not auth_enabled and not stream_enabled:
         return
+    configured_password, strict_configured = _camera_password_override(selection, options)
     candidates = (
         build_candidates(
             device,
-            options.get("camera_password"),
+            configured_password,
             account_device_uid=device.uid,
             account_devices=ACCOUNT_DEVICES,
+            strict_configured=strict_configured,
         )
         if auth_enabled
         else ()
@@ -458,11 +480,13 @@ def configure_bridge(
     api_token = options.get("api_token")
     alias = selection.alias
     idle_timeout = options.get("idle_timeout_seconds", 120)
+    configured_password, strict_configured = _camera_password_override(selection, options)
     candidates = build_candidates(
         device,
-        options.get("camera_password"),
+        configured_password,
         account_device_uid=device.uid,
         account_devices=account_devices if account_devices is not None else ACCOUNT_DEVICES,
+        strict_configured=strict_configured,
     )
     if not isinstance(api_token, str) or not 16 <= len(api_token) <= 1024:
         set_status(configuration_required=True, camera_ready=False, phase="api_token_required")
@@ -552,7 +576,7 @@ def initialize_camera_runtimes(
                     "run_snapshot_test",
                 )
             ):
-                run_p2p_acceptance(selection.device)
+                run_p2p_acceptance(selection)
             if configure_bridge(
                 selection,
                 selected_count=len(selections),

@@ -146,11 +146,24 @@ def test_per_camera_aliases_and_legacy_migration() -> None:
         devices,
         {"cameras": [{"uid": "A", "alias": "Door"}, {"uid": "B"}]},
     )
-    assert [(item.device.uid, item.alias) for item in selected] == [("A", "Door"), ("B", None)]
+    assert [(item.device.uid, item.alias, item.password) for item in selected] == [("A", "Door", None), ("B", None, None)]
     legacy = configured_camera_selections(
         devices, {"camera_uids": ["A", "B"], "camera_id": "legacy"}
     )
-    assert [(item.device.uid, item.alias) for item in legacy] == [("A", None), ("B", None)]
+    assert [(item.device.uid, item.alias, item.password) for item in legacy] == [("A", None, None), ("B", None, None)]
+
+
+def test_per_camera_password_override_is_optional_and_preserves_exact_secret() -> None:
+    devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
+    selected = configured_camera_selections(
+        devices,
+        {"cameras": [{"uid": "A", "alias": "Door", "password": "manual-secret"}, {"uid": "B", "password": ""}]},
+    )
+    assert [(item.device.uid, item.alias, item.password) for item in selected] == [
+        ("A", "Door", "manual-secret"),
+        ("B", None, None),
+    ]
+    assert "manual-secret" not in repr(selected[0])
 
 
 def test_camera_configuration_rejects_duplicate_uids_and_aliases() -> None:

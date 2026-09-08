@@ -45,9 +45,13 @@ that omit it by trying the camera's common initial value.
 
 If enumeration succeeds but a diagnostic or live stream reports camera
 authentication failure, the camera may use a changed local password that O-KAM
-did not return. Enter that known local camera password in `camera_password`,
-save, and restart the app. This value is not the O-KAM account password or the
-bridge API token. Do not post it in an issue.
+did not return. For one camera, add its `password` inside the matching
+`cameras` entry, save, and restart the app. A non-empty per-camera value is
+strict: only that credential is tried and it is never cached. A missing or empty
+per-camera value keeps automatic authentication. The legacy top-level
+`camera_password` remains for older configurations without a non-empty
+`cameras` list. These values are not the O-KAM account password or bridge API
+token. Do not post them in an issue.
 
 The older startup message `camera_device_credential_was_unavailable` is handled
 by version 1.2.0 and later; update the app before further troubleshooting.

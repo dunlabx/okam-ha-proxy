@@ -10,7 +10,7 @@ configuration:
     description: A random secret of at least 16 characters that you create and also enter in the Home Assistant integration.
   cameras:
     name: Cameras
-    description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias.
+    description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias and an optional password. Leave password empty for automatic authentication.
   api_port:
     name: API port
     description: Local HTTP API port. The default is 8099.

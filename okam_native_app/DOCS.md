@@ -15,9 +15,9 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | --- | --- |
 | `account_username` | Email address of the O-KAM account |
 | `account_password` | Password of the O-KAM account |
-| `camera_password` | Optional camera-level password override; normally leave blank |
+| `camera_password` | Legacy account-wide camera password override; normally leave blank |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
-| `cameras` | List of mappings with required `uid` and optional per-camera `alias`; empty means all account cameras |
+| `cameras` | List of mappings with required `uid`, optional `alias`, and optional `password`; empty means all account cameras |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
@@ -30,9 +30,13 @@ lists the selected camera names and UIDs. Use that response to verify the
 selection without exposing account or camera passwords.
 
 The app normally obtains the camera-level credential automatically and has a
-compatibility fallback for accounts that omit it. Set `camera_password` only
-when camera authentication fails and the camera uses a changed local password.
-It is not the O-KAM account password.
+compatibility fallback for accounts that omit it. Add an optional `password` to
+one camera mapping for an independent override. Missing or empty values keep
+automatic authentication; a non-empty value enables strict mode for that
+camera and disables cache, account, cross-camera, empty-password, and
+`888888` fallbacks. The legacy top-level `camera_password` remains available
+for older configurations without a non-empty `cameras` list. Camera passwords
+never appear in the API, logs, cache, or HACS.
 
 Leave `run_connect_test`, `run_auth_test`, `run_stream_test`, and
 `run_snapshot_test` disabled during normal operation. They are bounded

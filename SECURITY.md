@@ -12,8 +12,12 @@ Do not open a public issue for an undisclosed vulnerability.
 
 ## Credential safety
 
-- Select only the intended camera UIDs in `camera_uids`; additional account
-  cameras are never initialized automatically.
+- Select only the intended camera UIDs in the `cameras` list; additional account
+  cameras are never initialized when an explicit non-empty list is configured.
+- A camera mapping may include an optional `password`. Leave it absent or empty
+  for automatic authentication. A non-empty value is a strict per-camera
+  override and is never persisted in the authentication cache or exposed by
+  logs, API responses, diagnostics, or HACS.
 - Use a unique random local API token of at least 16 characters.
 - Never post account names, passwords, API tokens, camera identifiers, packet
   captures, media, or unredacted logs.

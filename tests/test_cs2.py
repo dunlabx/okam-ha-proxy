@@ -132,6 +132,13 @@ def test_cgi_request_preserves_explicit_empty_password() -> None:
     assert b"loginuse=admin&loginpas=&" in request
 
 
+def test_production_login_uses_admin_username_and_camera_password() -> None:
+    session = ScriptedSession([(0x6001, b"result=0")])
+    login = authenticate_camera(session, "device-secret")  # type: ignore[arg-type]
+    assert login.user == "admin"
+    assert b"loginuse=admin&loginpas=device-secret&" in session.writes[0]
+
+
 def test_command_write_is_one_atomic_drw_payload() -> None:
     writes: list[tuple[int, bytes]] = []
 

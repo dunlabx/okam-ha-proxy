@@ -86,9 +86,9 @@ configuration.
    | --- | --- |
    | `account_username` | Email address of the O-KAM account |
    | `account_password` | Password of the O-KAM account |
-   | `camera_password` | Normally leave blank; optional camera-level password override |
+   | `camera_password` | Legacy account-wide override; normally leave blank |
    | `api_token` | A new random secret of at least 16 characters that you choose |
-   | `cameras` | Optional list of `{uid, alias}` mappings; empty exposes all account cameras |
+   | `cameras` | Optional list of `{uid, alias, password}` mappings; empty exposes all account cameras |
    | `api_port` | HTTP API port, default `8099` |
    | `rtsp_port` | RTSP-over-TCP port, default `8100` |
    | `idle_timeout_seconds` | `120` seconds is recommended |
@@ -101,6 +101,7 @@ configuration.
    cameras:
      - uid: CAMERA_UID_1
        alias: Front Door
+       password: ""
      - uid: CAMERA_UID_2
        alias: Garage
    api_port: 8099
@@ -121,11 +122,13 @@ The API token is a local secret created by you. It is not supplied by O-KAM and
 must not be the O-KAM account password. You will enter the same token in the
 integration.
 
-The bridge normally obtains the camera-level password automatically from
-O-KAM. If that value is omitted for your account, it tries the camera's common
-initial value automatically. Only set `camera_password` when the app log reports
-a camera-authentication failure and the camera uses a different local password.
-This is not the O-KAM account password.
+The bridge normally obtains the camera-level password automatically from O-KAM.
+Leave a camera mapping's `password` absent or empty for this mode. A non-empty
+per-camera `password` is a strict override: exactly that value is tried for that
+camera, with no cache, account, cross-camera, empty-password, or `888888`
+fallback. The legacy top-level `camera_password` remains for older configurations
+without a non-empty `cameras` list. Camera passwords stay out of logs, API
+responses, diagnostics, cache, and HACS.
 
 ### 3. Install the Home Assistant integration
 

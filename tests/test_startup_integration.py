@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from okam_native.account import AccountDevice
+from okam_native.account import AccountDevice, CameraSelection
 from okam_native.auth import CameraAuthenticator, CredentialSourceCache, FALLBACK_SOURCE
 from okam_native.p2p import AuthenticationResult
 from okam_native.bridge import BridgeRegistry
@@ -168,6 +168,38 @@ def test_production_path_propagates_other_account_password(entrypoint, monkeypat
     assert any("source_uid=CAMERA_B" in line for line in logs)
 
 
+def test_production_path_isolates_manual_and_automatic_camera_auth(entrypoint, monkeypatch, capsys):
+    app, options, logs = entrypoint
+    options["cameras"] = [
+        {"uid": "CAMERA_MANUAL", "password": "manual-secret"},
+        {"uid": "CAMERA_AUTO"},
+    ]
+    devices = [
+        AccountDevice("CAMERA_MANUAL", "Manual", "account-secret"),
+        AccountDevice("CAMERA_AUTO", "Automatic", "account-auto"),
+    ]
+    selections = [
+        CameraSelection(devices[0], password="manual-secret"),
+        CameraSelection(devices[1]),
+    ]
+    calls = []
+
+    def fake_open(_helper, _library, _uid, _service, password, **_kwargs):
+        calls.append(password)
+        ok = password in {"manual-secret", "account-auto"}
+        return _auth_result(ok, 0 if ok else -1), FakeProcess()
+
+    monkeypatch.setattr(app, "open_authenticated_stream_process", fake_open)
+    assert app.initialize_camera_runtimes(selections, tuple(devices)) == 2
+    for bridge in app.BRIDGES.values():
+        subscription = bridge.session.acquire()
+        subscription.close()
+    assert calls == ["manual-secret", "account-auto"]
+    rendered = "\n".join(logs) + capsys.readouterr().out
+    assert "auth_mode=configured_password" in rendered
+    assert "manual-secret" not in rendered
+
+
 def test_production_startup_isolates_one_camera_failure(entrypoint, monkeypatch):
     app, options, _logs = entrypoint
     options["run_auth_test"] = True
@@ -175,6 +207,6 @@ def test_production_startup_isolates_one_camera_failure(entrypoint, monkeypatch)
         type("Selection", (), {"device": AccountDevice("A", "A", "pw"), "alias": None})(),
         type("Selection", (), {"device": AccountDevice("B", "B", "pw"), "alias": None})(),
     ]
-    monkeypatch.setattr(app, "run_p2p_acceptance", lambda device: (_ for _ in ()).throw(RuntimeError()) if device.uid == "A" else None)
+    monkeypatch.setattr(app, "run_p2p_acceptance", lambda selection: (_ for _ in ()).throw(RuntimeError()) if selection.device.uid == "A" else None)
     assert app.initialize_camera_runtimes(selections) == 1
     assert [bridge.camera_uid for bridge in app.BRIDGES.values()] == ["B"]

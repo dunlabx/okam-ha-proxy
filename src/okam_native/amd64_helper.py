@@ -113,10 +113,10 @@ def run(
     accepted_user = "admin"
     accepted_password = device_password or ""
     if mode != "connect":
+        length = " password_length=0" if not accepted_password else ""
         print(
             "native_login_input username_present=true "
-            f"password_present={str(device_password is not None).lower()} "
-            f"password_length={len(accepted_password)}",
+            f"password_present={str(device_password is not None).lower()}" + length,
             file=sys.stderr,
             flush=True,
         )

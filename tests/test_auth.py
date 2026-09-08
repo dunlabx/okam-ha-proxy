@@ -89,7 +89,7 @@ def test_empty_password_logging_is_symbolic_and_bounded(tmp_path) -> None:
         "UID_A", candidates, lambda _candidate: _result(authenticated=True)
     )
     rendered = "\n".join(logs)
-    assert "camera_auth_candidates uid=UID_A candidate_count=2 sources=empty_password,fallback_888888" in rendered
+    assert "camera_auth_candidates uid=UID_A auth_mode=automatic candidate_count=2 sources=empty_password,fallback_888888" in rendered
     assert "candidate=empty_password" in rendered
     assert "password=" not in rendered
 
@@ -219,6 +219,97 @@ def test_explicit_password_is_authoritative(tmp_path) -> None:
     )
     assert selected.source == CONFIGURED_SOURCE
     assert calls == [CONFIGURED_SOURCE]
+
+
+def test_strict_configured_password_creates_one_candidate() -> None:
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        account_devices=[AccountDevice("UID_B", "Back", "other-secret", True)],
+        strict_configured=True,
+    )
+    assert [(item.source, item.password, item.source_uid) for item in candidates] == [
+        (CONFIGURED_SOURCE, "manual-secret", None)
+    ]
+
+
+def test_strict_configured_password_rejection_has_no_fallback(tmp_path) -> None:
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        strict_configured=True,
+    )
+    calls = []
+    with pytest.raises(AuthenticationRejected):
+        _manager(tmp_path).authenticate(
+            "UID_A",
+            candidates,
+            lambda candidate: (calls.append(candidate.source) or _result(authenticated=False, login_result=-1)),
+        )
+    assert calls == [CONFIGURED_SOURCE]
+
+
+def test_strict_configured_password_logging_is_symbolic(tmp_path) -> None:
+    logs = []
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        strict_configured=True,
+    )
+    _manager(tmp_path, logs).authenticate(
+        "UID_A", candidates, lambda _candidate: _result(authenticated=True)
+    )
+    rendered = "\n".join(logs)
+    assert "auth_mode=configured_password" in rendered
+    assert "sources=configured_password" in rendered
+    assert "manual-secret" not in rendered
+    assert "password_length" not in rendered
+
+
+def test_strict_configured_password_transport_failure_has_no_fallback(tmp_path) -> None:
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        strict_configured=True,
+    )
+    calls = []
+    with pytest.raises(P2PError):
+        _manager(tmp_path).authenticate(
+            "UID_A", candidates,
+            lambda candidate: (calls.append(candidate.source) or (_ for _ in ()).throw(P2PError("transport"))),
+        )
+    assert calls == [CONFIGURED_SOURCE]
+
+
+def test_strict_configured_password_is_never_cached(tmp_path) -> None:
+    path = tmp_path / "camera_auth_cache.json"
+    cache = CredentialSourceCache(path)
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        strict_configured=True,
+    )
+    _manager(tmp_path).authenticate("UID_A", candidates, lambda _candidate: _result(authenticated=True))
+    assert CredentialSourceCache(path).get("UID_A") is None
+    assert not path.exists() or "manual-secret" not in path.read_text(encoding="utf-8")
+
+
+def test_strict_configured_password_resource_path_is_never_cached(tmp_path) -> None:
+    path = tmp_path / "camera_auth_cache.json"
+    candidates = build_candidates(
+        AccountDevice("UID_A", "Front", "account-secret", True),
+        "manual-secret",
+        strict_configured=True,
+    )
+    manager = CameraAuthenticator(CredentialSourceCache(path), logger=lambda _line: None)
+    selected, _result_value, resource = manager.authenticate_resource(
+        "UID_A",
+        candidates,
+        lambda _candidate: (_result(authenticated=True), object()),
+    )
+    assert selected.source == CONFIGURED_SOURCE
+    assert resource is not None
+    assert CredentialSourceCache(path).get("UID_A") is None
 
 
 def test_duplicate_candidate_values_are_attempted_once(tmp_path) -> None:

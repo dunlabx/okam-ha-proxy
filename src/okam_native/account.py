@@ -32,10 +32,11 @@ class AccountDevice:
 
 @dataclass(frozen=True)
 class CameraSelection:
-    """A selected account camera and its optional local alias."""
+    """A selected account camera, alias, and optional local password override."""
 
     device: AccountDevice
     alias: str | None = None
+    password: str | None = field(default=None, repr=False)
 
 
 def normalize_camera_uids(value: object) -> list[str] | None:
@@ -83,14 +84,16 @@ def select_account_devices(
     return [by_uid[uid.casefold()] for uid in camera_uids]
 
 
-def normalize_camera_configurations(value: object) -> list[tuple[str, str | None]] | None:
+def normalize_camera_configurations(
+    value: object,
+) -> list[tuple[str, str | None, str | None]] | None:
     """Parse the Supervisor-supported ``cameras`` list of small mappings."""
 
     if value is None:
         return None
     if not isinstance(value, list):
         raise AccountError("cameras must be a list")
-    result: list[tuple[str, str | None]] = []
+    result: list[tuple[str, str | None, str | None]] = []
     seen_uids: set[str] = set()
     seen_aliases: set[str] = set()
     for item in value:
@@ -114,9 +117,14 @@ def normalize_camera_configurations(value: object) -> list[tuple[str, str | None
                 if alias_key in seen_aliases:
                     raise AccountError("cameras contains duplicate aliases")
                 seen_aliases.add(alias_key)
-        result.append((uid, alias))
-    uid_keys = {uid.casefold() for uid, _alias in result}
-    for uid, alias in result:
+        password = item.get("password")
+        if password is not None and not isinstance(password, str):
+            raise AccountError("camera password is invalid")
+        # Empty and absent values both select automatic authentication.
+        password = password or None
+        result.append((uid, alias, password))
+    uid_keys = {uid.casefold() for uid, _alias, _password in result}
+    for uid, alias, _password in result:
         if alias is not None and alias.casefold() in uid_keys and alias.casefold() != uid.casefold():
             raise AccountError("camera alias collides with another camera UID")
     return result
@@ -142,7 +150,7 @@ def configured_camera_selections(
             legacy_alias = options.get("camera_id")
             alias = legacy_alias.strip() if isinstance(legacy_alias, str) else None
             current = [
-                (uid, alias if len(legacy_uids) == 1 else None)
+                (uid, alias if len(legacy_uids) == 1 else None, None)
                 for uid in legacy_uids
             ]
     if not current:
@@ -155,11 +163,11 @@ def configured_camera_selections(
             raise AccountError("official account returned duplicate camera UIDs")
         by_uid[key] = device
     selected: list[CameraSelection] = []
-    for uid, alias in current:
+    for uid, alias, camera_password in current:
         device = by_uid.get(uid.casefold())
         if device is None:
             raise AccountError("one or more configured camera UIDs were not found in the account")
-        selected.append(CameraSelection(device, alias))
+        selected.append(CameraSelection(device, alias, camera_password))
     return selected
 
 
