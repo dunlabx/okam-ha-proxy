@@ -14,9 +14,12 @@ from .p2p import AuthenticationResult, P2PError
 
 
 FALLBACK_SOURCE = "fallback_888888"
+EMPTY_PASSWORD_SOURCE = "empty_password"
 CONFIGURED_SOURCE = "configured_camera_password"
 ACCOUNT_SOURCE = "account_device_password"
-KNOWN_SOURCES = frozenset({CONFIGURED_SOURCE, ACCOUNT_SOURCE, FALLBACK_SOURCE})
+KNOWN_SOURCES = frozenset(
+    {CONFIGURED_SOURCE, ACCOUNT_SOURCE, EMPTY_PASSWORD_SOURCE, FALLBACK_SOURCE}
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,8 @@ def build_candidates(
     through that object's ``uid`` and ``password`` keys.  The associated value
     is tried first (after an explicit administrator override), followed by
     distinct non-empty passwords from the other objects in the same response.
+    An explicitly present empty associated password is represented by the
+    symbolic ``empty_password`` source and is tried before the fixed fallback.
     The source UID is metadata only; plaintext values never enter logs/cache.
     The original two-argument form remains supported for callers/tests.
     """
@@ -63,7 +68,12 @@ def build_candidates(
             raise P2PError("configured camera credential is invalid")
         candidates.append(CredentialCandidate(CONFIGURED_SOURCE, configured_password))
     associated = account_device_password
-    if not isinstance(associated, str):
+    associated_present: bool | None = None
+    if isinstance(associated, dict):
+        associated_present = "password" in associated or "device_password" in associated
+        associated = associated.get("password", associated.get("device_password"))
+    elif not isinstance(associated, str):
+        associated_present = getattr(account_device_password, "password_present", None)
         associated = getattr(account_device_password, "device_password", None)
     if isinstance(associated, str) and associated:
         candidates.append(
@@ -81,6 +91,8 @@ def build_candidates(
             continue
         if isinstance(password, str) and password:
             candidates.append(CredentialCandidate(ACCOUNT_SOURCE, password, uid))
+    if associated_present is True and associated == "":
+        candidates.append(CredentialCandidate(EMPTY_PASSWORD_SOURCE, ""))
     candidates.append(CredentialCandidate(FALLBACK_SOURCE, "888888"))
     result: list[CredentialCandidate] = []
     for candidate in candidates:

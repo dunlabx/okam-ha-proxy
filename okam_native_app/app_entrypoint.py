@@ -280,7 +280,7 @@ def run_p2p_acceptance(device: AccountDevice) -> None:
         return
     candidates = (
         build_candidates(
-            device.device_password,
+            device,
             options.get("camera_password"),
             account_device_uid=device.uid,
             account_devices=ACCOUNT_DEVICES,
@@ -459,7 +459,7 @@ def configure_bridge(
     alias = selection.alias
     idle_timeout = options.get("idle_timeout_seconds", 120)
     candidates = build_candidates(
-        device.device_password,
+        device,
         options.get("camera_password"),
         account_device_uid=device.uid,
         account_devices=account_devices if account_devices is not None else ACCOUNT_DEVICES,

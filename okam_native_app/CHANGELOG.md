@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.5
+
+- Treats an explicitly empty account-device password as the bounded
+  `empty_password` authentication candidate before the fixed `888888`
+  fallback, with per-camera cache and rejection invalidation.
+
 ## 1.2.4
 
 - Propagates the per-camera `password` returned by `/PC/device/show` through
