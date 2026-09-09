@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.0
+
+- Keeps one native stream session per physical camera while allowing concurrent
+  HTTP, RTSP, and Home Assistant consumers to attach without holding the session
+  lock during wake or authentication.
+- Dispatches receive-only ARP wake events asynchronously per camera, coalesces
+  duplicates safely, and preserves a wake arriving while cleanup is finishing.
+- Adds per-request HTTP timing, bounded media writes and Annex-B buffering, and
+  generation-safe helper cleanup.
+- Adds stable secondary RTSP alias routes while retaining canonical UID routes.
+- Preserves battery standby/live transitions, ordinary-camera active RTSP, H.264
+  passthrough, snapshot semantics, and multi-camera isolation.
+- Refreshes installation, architecture, standby, ARP, RTSP, and troubleshooting
+  documentation.
+
 ## 1.2.18
 
 - Adds per-camera sleep-mode and local IPv4 configuration.

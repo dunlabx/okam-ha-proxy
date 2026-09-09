@@ -116,6 +116,95 @@ def test_simultaneous_active_acquires_share_one_start_operation() -> None:
     session.close()
 
 
+def test_separate_camera_sessions_start_concurrently() -> None:
+    entered_a = threading.Event()
+    entered_b = threading.Event()
+    release = threading.Event()
+
+    def starter(entered: threading.Event) -> FakeProcess:
+        entered.set()
+        assert release.wait(2)
+        return FakeProcess()
+
+    first = NativeStreamSession(lambda: starter(entered_a))  # type: ignore[arg-type]
+    second = NativeStreamSession(lambda: starter(entered_b))  # type: ignore[arg-type]
+    results: list[object] = []
+    threads = [
+        threading.Thread(target=lambda: results.append(first.acquire())),
+        threading.Thread(target=lambda: results.append(second.acquire())),
+    ]
+    for thread in threads:
+        thread.start()
+    assert entered_a.wait(2) and entered_b.wait(2)
+    release.set()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert len(results) == 2
+    for subscription in results:
+        subscription.close()  # type: ignore[union-attr]
+    first.close()
+    second.close()
+
+
+def test_status_remains_responsive_while_startup_owner_is_blocked() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def start() -> FakeProcess:
+        entered.set()
+        assert release.wait(2)
+        return FakeProcess()
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    result: list[object] = []
+    owner = threading.Thread(target=lambda: result.append(session.acquire()))
+    owner.start()
+    assert entered.wait(2)
+    started = time.monotonic()
+    status = session.status()
+    assert time.monotonic() - started < 0.1
+    assert status.state == "AUTHENTICATING"
+    release.set()
+    owner.join(timeout=2)
+    assert len(result) == 1
+    result[0].close()  # type: ignore[union-attr]
+    session.close()
+
+
+def test_shutdown_wakes_waiters_during_startup_without_publishing_process() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def start() -> FakeProcess:
+        entered.set()
+        release.wait(2)
+        return FakeProcess()
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    owner_result: list[object] = []
+    waiter_result: list[object] = []
+    owner = threading.Thread(target=lambda: owner_result.append(_capture(session.acquire)))
+    owner.start()
+    assert entered.wait(2)
+    waiter = threading.Thread(target=lambda: waiter_result.append(_capture(session.acquire)))
+    waiter.start()
+    session.close()
+    waiter.join(timeout=1)
+    assert not waiter.is_alive()
+    assert isinstance(waiter_result[0], P2PError)
+    release.set()
+    owner.join(timeout=2)
+    assert not owner.is_alive()
+    assert isinstance(owner_result[0], P2PError)
+
+
+def _capture(call):
+    try:
+        return call()
+    except Exception as error:  # pragma: no cover - assertion helper
+        return error
+
+
 def test_session_lifecycle_logs_identify_camera_and_process_generation() -> None:
     lines: list[str] = []
     process = FakeProcess()
@@ -258,6 +347,55 @@ def test_reconnect_waits_for_previous_helper_cleanup() -> None:
     second = second_result[0]
     assert hasattr(second, "close")
     second.close()  # type: ignore[union-attr]
+    session.close()
+
+
+def test_acquire_during_stopping_waits_then_starts_one_pending_generation():
+    class SlowTerminationProcess(FakeProcess):
+        def terminate(self) -> None:
+            self.returncode = 0
+            self.stderr.chunks.put(b'{"disconnected":true}\n')
+            self.stderr.chunks.put(None)
+            self._done.set()
+
+    first = SlowTerminationProcess()
+    second = FakeProcess()
+    processes = [first, second]
+    starts: list[bool] = []
+
+    def start() -> FakeProcess:
+        starts.append(True)
+        return processes[len(starts) - 1]
+
+    session = NativeStreamSession(start, idle_timeout=0.01)  # type: ignore[arg-type]
+    active = session.acquire()
+    active.close()
+    deadline = time.monotonic() + 1
+    while session.status().state != "STOPPING" and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert session.status().state == "STOPPING"
+    result: list[object] = []
+    waiter = threading.Thread(target=lambda: result.append(session.acquire(reason="arp_wake")))
+    waiter.start()
+    time.sleep(0.03)
+    assert waiter.is_alive()
+    first.stdout.chunks.put(None)
+    waiter.join(timeout=2)
+    assert not waiter.is_alive()
+    assert len(starts) == 2
+    result[0].close()  # type: ignore[union-attr]
+    session.close()
+
+
+def test_stale_idle_timer_cannot_terminate_newer_process():
+    old = FakeProcess()
+    current = FakeProcess()
+    session = NativeStreamSession(lambda: current)  # type: ignore[arg-type]
+    with session._lock:
+        session._process = current
+        session._process_generation = 2
+    session._stop_if_idle(1, old)  # type: ignore[arg-type]
+    assert current.poll() is None
     session.close()
 
 

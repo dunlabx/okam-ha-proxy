@@ -1,6 +1,7 @@
 import http.client
 import json
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -239,6 +240,37 @@ def test_bridge_reports_idle_waking_and_streaming_states() -> None:
     assert bridge.status()["state"] == "waking"
     session.media_ready = True
     assert bridge.status()["state"] == "streaming"
+
+
+def test_keep_alive_requests_get_independent_timing(capsys) -> None:
+    bridge = CameraBridge(
+        camera_id="cabin",
+        camera_name="Cabin",
+        api_token="x" * 16,
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+
+    def slow_ready() -> dict[str, object]:
+        time.sleep(1.05)
+        return {"loader_ready": True, "camera_ready": True}
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(slow_ready, lambda: bridge))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+    try:
+        for _ in range(2):
+            connection.request("GET", "/ready", headers={"Connection": "keep-alive"})
+            response = connection.getresponse()
+            assert response.status == 200
+            response.read()
+    finally:
+        connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+    assert capsys.readouterr().err.count("event=slow_status_request") == 2
 
 
 def test_dropped_clients_do_not_report_a_crash(capsys) -> None:

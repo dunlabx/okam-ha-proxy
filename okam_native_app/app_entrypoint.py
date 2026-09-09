@@ -800,6 +800,13 @@ def main() -> int:
                 bridge = BRIDGES.get(camera_uid)
                 if bridge is None:
                     return
+                state = bridge.session.status().state
+                if state in {"STARTING", "AUTHENTICATING", "CONNECTED", "STREAMING"}:
+                    print(
+                        f"arp_wake_coalesced uid={camera_uid} state={state}",
+                        flush=True,
+                    )
+                    return
                 try:
                     subscription = bridge.session.acquire(
                         passive=False, reason="arp_wake", wake_before_connect=False

@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import traceback
+import unicodedata
 from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
@@ -25,6 +26,7 @@ print = timestamped_print
 
 MAX_REQUEST_BYTES = 4096
 STREAM_CHUNK_BYTES = 32 * 1024
+MEDIA_WRITE_TIMEOUT_SECONDS = 5.0
 # A client going away mid-request is normal here: the supervisor polls the
 # bridge, and media consumers disconnect whenever a view closes.
 _EXPECTED_DISCONNECTS = (
@@ -156,18 +158,31 @@ class BridgeRegistry:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._bridges: dict[str, CameraBridge] = {}
+        self._aliases: dict[str, CameraBridge] = {}
+
+    @staticmethod
+    def _route_key(value: str) -> str:
+        return unicodedata.normalize("NFC", value.strip()).casefold()
 
     def add(self, bridge: CameraBridge) -> None:
         with self._lock:
-            identifiers = {bridge.camera_id, bridge.camera_uid}
-            if any(
-                identifiers.intersection({item.camera_id, item.camera_uid})
+            identifiers = {self._route_key(bridge.camera_id), self._route_key(bridge.camera_uid)}
+            existing = {
+                self._route_key(item.camera_id)
                 for item in self._bridges.values()
-            ):
+            } | {
+                self._route_key(item.camera_uid)
+                for item in self._bridges.values()
+            } | set(self._aliases)
+            if identifiers & existing:
                 raise ValueError("duplicate camera identifier")
             self._bridges[bridge.camera_id] = bridge
+            if bridge.camera_id != bridge.camera_uid and bridge.camera_id.strip():
+                self._aliases[self._route_key(bridge.camera_id)] = bridge
 
     def get(self, identifier: str) -> CameraBridge | None:
+        if not identifier.strip():
+            return None
         with self._lock:
             bridge = self._bridges.get(identifier)
             if bridge is not None:
@@ -175,7 +190,7 @@ class BridgeRegistry:
             for candidate in self._bridges.values():
                 if candidate.camera_uid == identifier:
                     return candidate
-            return None
+            return self._aliases.get(self._route_key(identifier))
 
     def values(self) -> tuple[CameraBridge, ...]:
         with self._lock:
@@ -233,6 +248,10 @@ def make_handler(
         def setup(self) -> None:
             super().setup()
             self._request_started = time.monotonic()
+
+        def handle_one_request(self) -> None:  # noqa: D105 - BaseHTTPRequestHandler API
+            self._request_started = time.monotonic()
+            super().handle_one_request()
 
         def handle(self) -> None:  # noqa: D105 - BaseHTTPRequestHandler API
             try:
@@ -441,6 +460,7 @@ def make_handler(
             self.send_header("Connection", "close")
             self.end_headers()
             self.close_connection = True
+            self.connection.settimeout(MEDIA_WRITE_TIMEOUT_SECONDS)
             try:
                 for chunk in subscription:
                     self.wfile.write(chunk)
@@ -533,6 +553,7 @@ def make_handler(
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "close")
             self.end_headers()
+            self.connection.settimeout(MEDIA_WRITE_TIMEOUT_SECONDS)
             _session_diagnostic(
                 bridge,
                 "http_headers_sent",

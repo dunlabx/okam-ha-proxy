@@ -21,7 +21,7 @@ Confirm that all required values are present:
 - O-KAM account email
 - O-KAM account password
 - a user-created API token containing at least 16 characters
-- a camera alias containing only letters, numbers, `_`, or `-`
+- a non-empty camera alias that is unique among the selected cameras
 
 Do not use the O-KAM password as the local API token.
 
@@ -123,6 +123,13 @@ short page changes. To use another value, open **Settings → Devices & services
 → O-KAM Native Bridge → Configure** and set **Idle disconnect delay** between
 10 and 600 seconds.
 
+For a battery camera, an open RTSP connection showing **Standby** (режим
+ожидания) is expected while the camera sleeps. Standby is synthetic H.264 for
+Frigate/VLC continuity and does not represent motion or keep the camera awake.
+After PIR wakes the camera, verify that its configured DHCP-reserved `ip`
+matches the ARP sender address so the bridge can map IP to UID. Do not add the
+camera IP to an ordinary (`battery_camera: false`) camera solely for video.
+
 Expected idle fields are:
 
 ```json
@@ -174,3 +181,6 @@ addresses, and any other private values before posting.
 - Keep the add-on's default API/RTSP ports when using the Home Assistant
   Supervisor port mapping. Custom ports are intended for standalone deployments.
 - RTSP has no separate authentication; keep it on the trusted LAN.
+- Use the canonical UID first. If an alias is configured, it is a convenience
+  route to the same session; unknown, duplicate, or colliding aliases are
+  rejected during startup.

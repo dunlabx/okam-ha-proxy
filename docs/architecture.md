@@ -28,21 +28,28 @@ camera. Once media is flowing, still-image requests attach to the existing
 session and produce a real snapshot.
 
 The authenticated HTTP API accepts either the legacy local alias or the
-selected UID in `/api/cameras/<identifier>/...`. The RTSP listener uses the UID
-path directly: `rtsp://HOST:8100/<camera_uid>`.
+selected UID in `/api/cameras/<identifier>/...`. The RTSP listener uses the
+canonical UID path and an optional alias: `rtsp://HOST:8100/<camera_uid>` or
+`rtsp://HOST:8100/<alias>`. Both routes select the same per-camera session.
 
 ## Camera lifecycle
 
 1. Account enumeration returns all devices, then the optional `cameras` list selects an exact subset and assigns aliases.
 2. The first viewer of one selected camera acquires a stream subscription.
-3. The app requests a low-power wake and starts only that camera's native session.
+3. The app requests a low-power wake for an active consumer and starts only
+   that camera's native session. Passive battery RTSP remains on standby.
 4. The entity reports `waking` until the first H.264 bytes arrive.
 5. Annex-B H.264 frames are distributed to HTTP and RTSP viewers.
 6. A snapshot request attaches to the existing session and decodes one frame to
    JPEG in memory.
 7. When the final subscription closes, an idle timer starts for that camera.
 8. At the end of the idle timeout, the app sends the camera's stream-stop
-   request and disconnects the P2P client cleanly.
+  request and disconnects the P2P client cleanly.
+
+ARP wake dispatch is receive-only. A bounded queue and one worker per configured
+camera keep the raw packet reader independent from slow native startup. While a
+camera is starting, connected, or streaming, duplicate ARPs are coalesced. An
+ARP observed during STOPPING is retained once and starts only after cleanup.
 
 Queue sizes and request bodies are bounded. A slow viewer drops older queued
 chunks instead of allowing unbounded memory growth.

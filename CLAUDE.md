@@ -15,7 +15,7 @@ version:
 - **HA integration** (`custom_components/okam/`) — creates the `camera.*`
   entity (live view + snapshots) that talks to the bridge over HTTP.
 
-## Current architecture and release rules
+## Current architecture and release rules (2.0.0)
 
 Read `docs/amd64-development-handoff.md` before touching transport code. Key
 points:
@@ -25,16 +25,13 @@ points:
     Bionic/libhybris compat layer (`native/hybris_connect/`, `native/android_compat/`).
   - `amd64`: pure-Python CS2/PPPP encrypted-UDP client — **no** emulation, Wine,
     Android, or GUI runtime.
-- amd64 status: enumeration + wake work; direct encrypted UDP session
-  establishes; reliable channel writes are acked. **Unresolved:** after
-  transport, around auth / session-readiness / live-start sequencing/timing —
-  channel 1 does not deliver video frames. Evidence does **not** point to a
-  missing TCP relay.
-- Camera auth/live-start results vary with camera state and rapid reconnects.
-  A rejection does **not** prove the command bytes are wrong — test with a rested
-  camera, one session at a time.
-- 11 physical release gates (see handoff §"Required release gates") must pass
-  before `1.2.0` ships. These require a real camera and cannot be verified here.
+- Both architectures share the same one-session-per-camera lifecycle and
+  bounded fan-out. The ARM64 path uses the verified libhybris helper; amd64
+  uses the pure-Python CS2/PPPP transport.
+- 2.0.0 keeps battery standby/live behavior, canonical UID routes, active
+  ordinary-camera RTSP, and the established authentication and IPC contracts.
+- Physical validation is required before publishing a future 2.0.0 release;
+  this checkout contains only the local release candidate.
 
 ## Camera identity and authentication
 
@@ -91,7 +88,7 @@ uv venv --python 3.11
 uv pip install -e '.[test]'
 ```
 
-Run the test suite (expect 59 passing):
+Run the test suite:
 ```bash
 .venv/Scripts/python.exe -m pytest -q
 ```

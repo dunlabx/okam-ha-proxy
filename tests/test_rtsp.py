@@ -4,7 +4,7 @@ import time
 import pytest
 
 from okam_native.bridge import BridgeRegistry, CameraBridge
-from okam_native.rtsp import RTSPServer, _AccessUnitAssembler, _frame_ticks_from_sps, _nal_units, _rtp_packets, _sdp
+from okam_native.rtsp import MAX_FRAME_BYTES, RTSPServer, _AccessUnitAssembler, _frame_ticks_from_sps, _nal_units, _rtp_packets, _sdp
 from okam_native.session import SessionStatus
 
 
@@ -22,6 +22,12 @@ def test_annex_b_parser_keeps_incomplete_tail() -> None:
     carry = bytearray()
     assert _nal_units(b"\x00\x00\x01\x67sps\x00\x00", carry) == []
     assert _nal_units(b"\x01\x68pps\x00\x00\x01\x65idr", carry) == [b"\x67sps", b"\x68pps"]
+
+
+def test_annex_b_incomplete_carry_is_bounded():
+    carry = bytearray()
+    assert _nal_units(b"x" * (MAX_FRAME_BYTES + 1024), carry) == []
+    assert len(carry) <= 4
 
 
 def test_h264_rtp_packetization_sets_marker_and_fragments_large_nal() -> None:
@@ -64,6 +70,67 @@ def test_registry_routes_uid_and_sdp_advertises_h264() -> None:
     registry.add(bridge)
     assert registry.get("UID_FRONT") is bridge
     assert b"H264/90000" in _sdp(bridge, "127.0.0.1", 8100)
+
+
+def test_registry_routes_trimmed_casefolded_alias_to_same_bridge():
+    bridge = CameraBridge(
+        camera_id="Front Door",
+        camera_uid="UID_FRONT",
+        camera_name="Front",
+        api_token="x" * 16,
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    registry = BridgeRegistry()
+    registry.add(bridge)
+    assert registry.get("UID_FRONT") is bridge
+    assert registry.get("  front door ") is bridge
+
+
+def test_registry_rejects_alias_uid_and_alias_collisions():
+    first = CameraBridge(
+        camera_id="front",
+        camera_uid="UID_FRONT",
+        camera_name="Front",
+        api_token="x" * 16,
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    registry = BridgeRegistry()
+    registry.add(first)
+    with pytest.raises(ValueError):
+        registry.add(CameraBridge(
+            camera_id="uid_front",
+            camera_uid="UID_OTHER",
+            camera_name="Other",
+            api_token="x" * 16,
+            session=FakeSession(),  # type: ignore[arg-type]
+            ffmpeg="ffmpeg",
+        ))
+    with pytest.raises(ValueError):
+        registry.add(CameraBridge(
+            camera_id=" FRONT ",
+            camera_uid="UID_OTHER",
+            camera_name="Other",
+            api_token="x" * 16,
+            session=FakeSession(),  # type: ignore[arg-type]
+            ffmpeg="ffmpeg",
+        ))
+
+
+def test_empty_alias_does_not_create_a_route():
+    bridge = CameraBridge(
+        camera_id="",
+        camera_uid="UID_EMPTY_ALIAS",
+        camera_name="Camera",
+        api_token="x" * 16,
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    registry = BridgeRegistry()
+    registry.add(bridge)
+    assert registry.get("") is None
+    assert registry.get("UID_EMPTY_ALIAS") is bridge
 
 
 def test_registry_keeps_camera_identifiers_and_runtimes_independent() -> None:

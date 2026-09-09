@@ -1,6 +1,8 @@
 from __future__ import annotations
+import queue
 import socket
 import struct
+import threading
 from pathlib import Path
 import yaml
 from okam_native.arp_listener import ArpWakeListener, is_expected_camera_arp, parse_arp_packet, parse_arp_request
@@ -58,6 +60,31 @@ def test_listener_is_receive_only():
     source=Path(__file__).parents[1]/"src/okam_native/arp_listener.py"
     text=source.read_text()
     assert ".send(" not in text and ".sendto(" not in text and ".sendmsg(" not in text
+
+
+def test_dispatch_coalesces_bursts_per_camera_without_blocking_receiver():
+    packet = parse_arp_request(_arp_frame(sender="192.168.1.140", target="10.0.0.1"))
+    assert packet is not None
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    listener = ArpWakeListener(
+        ip_to_camera_uid={"192.168.1.140": "UID_A"},
+        on_wake=lambda uid, _packet: (calls.append(uid), entered.set(), release.wait(2)),
+    )
+    channel = queue.Queue(maxsize=1)
+    listener._queues["UID_A"] = channel
+    worker = threading.Thread(target=listener._dispatch_loop, args=("UID_A", channel), daemon=True)
+    worker.start()
+    listener._handle_packet(packet, dispatch=True)
+    assert entered.wait(1)
+    for _ in range(10):
+        listener._handle_packet(packet, dispatch=True)
+    release.set()
+    worker.join(timeout=2)
+    assert calls == ["UID_A"]
+    listener.close()
 
 def test_addon_defaults_and_minimum_network_permission():
     root=Path(__file__).parents[1]

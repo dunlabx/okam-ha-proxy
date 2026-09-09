@@ -17,6 +17,7 @@ import time
 from urllib.parse import unquote, urlsplit
 
 from .bridge import BridgeRegistry, CameraBridge
+from .cs2 import MAX_FRAME_BYTES
 from .p2p import P2PError
 
 
@@ -163,6 +164,11 @@ def _nal_units(data: bytes, carry: bytearray) -> list[bytes]:
     """Extract complete Annex-B NAL units while retaining an incomplete tail."""
 
     carry.extend(data)
+    if len(carry) > MAX_FRAME_BYTES + 4:
+        # Keep only enough bytes to preserve a start code split across reads;
+        # an unbounded incomplete NAL must never grow with a slow/malformed
+        # producer.
+        del carry[: len(carry) - 4]
     starts: list[int] = []
     i = 0
     while i + 3 <= len(carry):
@@ -183,6 +189,8 @@ def _nal_units(data: bytes, carry: bytearray) -> list[bytes]:
         if nal:
             result.append(nal)
     del carry[: starts[-1]]
+    if len(carry) > MAX_FRAME_BYTES + 4:
+        del carry[: len(carry) - 4]
     return result
 
 

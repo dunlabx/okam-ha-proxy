@@ -1,6 +1,7 @@
 """Receive-only ARP observation for configured battery-camera wake events."""
 from __future__ import annotations
 from dataclasses import dataclass
+import queue
 import socket
 import struct
 import threading
@@ -47,6 +48,10 @@ class ArpWakeListener:
         self._socket: socket.socket | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._queues: dict[str, queue.Queue[ArpPacket | None]] = {}
+        self._workers: dict[str, threading.Thread] = {}
+        self._pending: set[str] = set()
+        self._dispatch_lock = threading.Lock()
 
     def start(self, *, enabled: bool = True) -> bool:
         if not enabled:
@@ -63,6 +68,15 @@ class ArpWakeListener:
             return False
         self._socket = raw_socket
         self._logger("arp_wake_listener_started interface=all mechanism=af_packet protocol=arp mode=receive_only configured_cameras=" f"{len(self._ip_to_camera_uid)}", flush=True)
+        for uid in sorted(set(self._ip_to_camera_uid.values())):
+            channel: queue.Queue[ArpPacket | None] = queue.Queue(maxsize=1)
+            self._queues[uid] = channel
+            worker = threading.Thread(
+                target=self._dispatch_loop, args=(uid, channel),
+                name=f"okam-arp-{uid}", daemon=True,
+            )
+            self._workers[uid] = worker
+            worker.start()
         self._thread = threading.Thread(target=self._run, name="okam-arp-listener", daemon=True)
         self._thread.start()
         return True
@@ -73,10 +87,22 @@ class ArpWakeListener:
         self._socket = None
         if raw_socket is not None:
             raw_socket.close()
+        for channel in self._queues.values():
+            try:
+                channel.put_nowait(None)
+            except queue.Full:
+                pass
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)
         self._thread = None
+        for worker in self._workers.values():
+            if worker is not threading.current_thread():
+                worker.join(timeout=2.0)
+        self._workers.clear()
+        self._queues.clear()
+        with self._dispatch_lock:
+            self._pending.clear()
 
     def _run(self) -> None:
         raw_socket = self._socket
@@ -90,9 +116,24 @@ class ArpWakeListener:
             except OSError:
                 return
             interface = address[0] if isinstance(address, tuple) and address else None
-            self._handle_packet(parse_arp_request(frame, interface=interface))
+            self._handle_packet(parse_arp_request(frame, interface=interface), dispatch=True)
 
-    def _handle_packet(self, packet: ArpPacket | None) -> None:
+    def _dispatch_loop(self, uid: str, channel: queue.Queue[ArpPacket | None]) -> None:
+        while not self._stop.is_set():
+            try:
+                packet = channel.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if packet is None:
+                return
+            try:
+                if self._on_wake is not None:
+                    self._on_wake(uid, packet)
+            finally:
+                with self._dispatch_lock:
+                    self._pending.discard(uid)
+
+    def _handle_packet(self, packet: ArpPacket | None, *, dispatch: bool = False) -> None:
         if packet is None:
             return
         camera_uid = self._ip_to_camera_uid.get(packet.sender_ip)
@@ -100,7 +141,23 @@ class ArpWakeListener:
             return
         self._logger("camera_arp_wake_detected " f"camera={packet.sender_ip} uid={camera_uid} target={packet.target_ip}", flush=True)
         if self._on_wake is not None:
-            self._on_wake(camera_uid, packet)
+            if not dispatch:
+                # Keep direct invocation useful for the parser-level API and
+                # existing callers that do not start a listener.
+                self._on_wake(camera_uid, packet)
+                return
+            channel = self._queues.get(camera_uid)
+            if channel is None:
+                return
+            with self._dispatch_lock:
+                if camera_uid in self._pending:
+                    return
+                self._pending.add(camera_uid)
+            try:
+                channel.put_nowait(packet)
+            except queue.Full:
+                with self._dispatch_lock:
+                    self._pending.discard(camera_uid)
 
 def _safe_reason(error: BaseException) -> str:
     reason = str(error).strip().replace(" ", "_")
