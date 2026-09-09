@@ -8,6 +8,7 @@ import struct
 import subprocess
 import threading
 import queue
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +28,8 @@ MAX_RESPONSE_BYTES = 64 * 1024
 MAX_FIELD_BYTES = 4096
 VIRTUAL_ID_PATTERN = re.compile(r"^[A-Za-z]+\d{7,}.*[A-Za-z]$")
 DEFAULT_CAMERA_PASSWORD = "888888"
+_HELPER_STDERR_BYTES = 4096
+_SECRET_TEXT = re.compile(r"(?i)(password|token|secret|authorization)(\s*[=:]\s*)([^\s,;]+)")
 
 
 class P2PError(RuntimeError):
@@ -44,6 +47,23 @@ def _open_request(request: urllib.request.Request, timeout: float) -> bytes:
     if len(payload) > MAX_RESPONSE_BYTES:
         raise P2PError("official P2P directory response was too large")
     return payload
+
+
+def _sanitize_helper_stderr(value: bytes) -> str:
+    text = value[:_HELPER_STDERR_BYTES].decode("utf-8", errors="replace")
+    text = _SECRET_TEXT.sub(r"\1\2<redacted>", text)
+    return text.replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _reap_after_kill(process: subprocess.Popen[bytes]) -> None:
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        print(
+            "native_helper_reap_timeout "
+            f"process_pid={getattr(process, 'pid', None) or '-'}",
+            flush=True,
+        )
 
 
 def get_service_parameter(uid: str, *, opener: OpenRequest = _open_request) -> str:
@@ -605,14 +625,14 @@ def run_snapshot_probe(
     finally:
         if decoder_process is not None and decoder_process.poll() is None:
             decoder_process.kill()
-            decoder_process.wait(timeout=5)
+            _reap_after_kill(decoder_process)
         if helper_process is not None and helper_process.poll() is None:
             helper_process.terminate()
             try:
                 helper_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 helper_process.kill()
-                helper_process.wait(timeout=5)
+                _reap_after_kill(helper_process)
     if len(helper_stderr) > MAX_RESPONSE_BYTES:
         raise P2PError("native snapshot helper returned an invalid response")
     payload: object | None = None
@@ -691,7 +711,7 @@ def open_stream_process(
     except (OSError, subprocess.SubprocessError):
         if "process" in locals() and process.poll() is None:
             process.kill()
-            process.wait(timeout=5)
+            _reap_after_kill(process)
         raise P2PError("native H.264 stream helper failed") from None
 
 
@@ -725,11 +745,14 @@ def open_authenticated_stream_process(
         process.stdin.write(stdin)
         process.stdin.close()
         process.stdin = None
-        events: queue.Queue[dict[str, object]] = queue.Queue(maxsize=1)
+        events: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=1)
+        stderr_capture = bytearray()
 
         def read_events() -> None:
             assert process.stderr is not None
             for line in process.stderr:
+                if len(stderr_capture) < _HELPER_STDERR_BYTES:
+                    stderr_capture.extend(line[: _HELPER_STDERR_BYTES - len(stderr_capture)])
                 try:
                     payload = json.loads(line.decode("utf-8"))
                 except (UnicodeError, json.JSONDecodeError):
@@ -740,15 +763,49 @@ def open_authenticated_stream_process(
                     except queue.Full:
                         pass
                     return
+            try:
+                events.put_nowait(None)
+            except queue.Full:
+                pass
 
         threading.Thread(target=read_events, daemon=True).start()
-        try:
-            payload = events.get(timeout=timeout)
-        except queue.Empty:
-            if process.poll() is None:
-                process.terminate()
-                process.wait(timeout=5)
-            raise P2PError("native stream helper did not report authentication") from None
+        expires = time.monotonic() + timeout
+        while True:
+            remaining = expires - time.monotonic()
+            if remaining <= 0:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        _reap_after_kill(process)
+                raise P2PError("native stream helper did not report authentication") from None
+            try:
+                event = events.get(timeout=min(0.1, remaining))
+            except queue.Empty:
+                if process.poll() is not None:
+                    stderr = _sanitize_helper_stderr(bytes(stderr_capture))
+                    detail = f" exit_code={process.returncode}"
+                    if stderr:
+                        detail += f" stderr={stderr}"
+                    raise P2PError(
+                        "native stream helper exited before authentication" + detail
+                    ) from None
+                continue
+            if event is None:
+                code = process.poll()
+                if code is None:
+                    raise P2PError("native stream helper closed auth channel") from None
+                stderr = _sanitize_helper_stderr(bytes(stderr_capture))
+                detail = f" exit_code={code}"
+                if stderr:
+                    detail += f" stderr={stderr}"
+                raise P2PError(
+                    "native stream helper exited before authentication" + detail
+                ) from None
+            payload = event
+            break
         required = ("connected", "login_sent", "login_response_received", "authenticated")
         if any(not isinstance(payload.get(name), bool) for name in required):
             raise P2PError("native stream helper returned an invalid authentication event")
@@ -771,10 +828,10 @@ def open_authenticated_stream_process(
     except P2PError:
         if "process" in locals() and process.poll() is None:
             process.kill()
-            process.wait(timeout=5)
+            _reap_after_kill(process)
         raise
     except (OSError, subprocess.SubprocessError, TimeoutError):
         if "process" in locals() and process.poll() is None:
             process.kill()
-            process.wait(timeout=5)
+            _reap_after_kill(process)
         raise P2PError("native H.264 stream helper failed") from None

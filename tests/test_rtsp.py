@@ -4,7 +4,7 @@ import time
 import pytest
 
 from okam_native.bridge import BridgeRegistry, CameraBridge
-from okam_native.rtsp import MAX_FRAME_BYTES, RTSPServer, _AccessUnitAssembler, _frame_ticks_from_sps, _nal_units, _rtp_packets, _sdp
+from okam_native.rtsp import MAX_FRAME_BYTES, RTSPServer, _AccessUnitAssembler, _RTSPHandler, _frame_ticks_from_sps, _nal_units, _rtp_packets, _sdp
 from okam_native.session import SessionStatus
 
 
@@ -28,6 +28,15 @@ def test_annex_b_incomplete_carry_is_bounded():
     carry = bytearray()
     assert _nal_units(b"x" * (MAX_FRAME_BYTES + 1024), carry) == []
     assert len(carry) <= 4
+
+
+def test_annex_b_accepts_a_valid_nal_just_below_the_safety_bound():
+    carry = bytearray()
+    payload = b"x" * (MAX_FRAME_BYTES - 32)
+    result = _nal_units(
+        b"\x00\x00\x01\x65" + payload + b"\x00\x00\x01\x41x", carry
+    )
+    assert result and result[0] == b"\x65" + payload
 
 
 def test_h264_rtp_packetization_sets_marker_and_fragments_large_nal() -> None:
@@ -57,6 +66,43 @@ def test_rtp_marker_is_only_on_last_packet_of_access_unit() -> None:
     assert not any(packet[0][1] & 0x80 for packet in packets)
 
 
+def test_slow_rtsp_client_does_not_block_another_client() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowSocket:
+        def sendall(self, _payload):
+            entered.set()
+            assert release.wait(2)
+
+    class FastSocket:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    slow = object.__new__(_RTSPHandler)
+    slow.request = SlowSocket()
+    slow._write_lock = threading.Lock()
+    slow._rtp_channel = 0
+    fast_socket = FastSocket()
+    fast = object.__new__(_RTSPHandler)
+    fast.request = fast_socket
+    fast._write_lock = threading.Lock()
+    fast._rtp_channel = 0
+    slow_thread = threading.Thread(
+        target=slow._send_access_unit, args=([b"\x65" + b"x" * 20], 1, 2, 3)
+    )
+    slow_thread.start()
+    assert entered.wait(1)
+    fast._send_access_unit([b"\x65fast"], 1, 2, 3)
+    assert fast_socket.sent
+    release.set()
+    slow_thread.join(timeout=2)
+    assert not slow_thread.is_alive()
+
+
 def test_registry_routes_uid_and_sdp_advertises_h264() -> None:
     bridge = CameraBridge(
         camera_id="front",
@@ -72,7 +118,7 @@ def test_registry_routes_uid_and_sdp_advertises_h264() -> None:
     assert b"H264/90000" in _sdp(bridge, "127.0.0.1", 8100)
 
 
-def test_registry_routes_trimmed_casefolded_alias_to_same_bridge():
+def test_registry_routes_trimmed_case_sensitive_alias_to_same_bridge():
     bridge = CameraBridge(
         camera_id="Front Door",
         camera_uid="UID_FRONT",
@@ -84,7 +130,8 @@ def test_registry_routes_trimmed_casefolded_alias_to_same_bridge():
     registry = BridgeRegistry()
     registry.add(bridge)
     assert registry.get("UID_FRONT") is bridge
-    assert registry.get("  front door ") is bridge
+    assert registry.get("  Front Door ") is bridge
+    assert registry.get("front door") is None
 
 
 def test_registry_rejects_alias_uid_and_alias_collisions():
@@ -100,7 +147,7 @@ def test_registry_rejects_alias_uid_and_alias_collisions():
     registry.add(first)
     with pytest.raises(ValueError):
         registry.add(CameraBridge(
-            camera_id="uid_front",
+            camera_id="UID_FRONT",
             camera_uid="UID_OTHER",
             camera_name="Other",
             api_token="x" * 16,
@@ -109,7 +156,7 @@ def test_registry_rejects_alias_uid_and_alias_collisions():
         ))
     with pytest.raises(ValueError):
         registry.add(CameraBridge(
-            camera_id=" FRONT ",
+            camera_id=" front ",
             camera_uid="UID_OTHER",
             camera_name="Other",
             api_token="x" * 16,
@@ -131,6 +178,30 @@ def test_empty_alias_does_not_create_a_route():
     registry.add(bridge)
     assert registry.get("") is None
     assert registry.get("UID_EMPTY_ALIAS") is bridge
+
+
+def test_case_sensitive_aliases_can_be_distinct_and_invalid_aliases_are_rejected():
+    registry = BridgeRegistry()
+    for alias, uid in (("camera1", "UID_ONE"), ("Camera1", "UID_TWO")):
+        registry.add(CameraBridge(
+            camera_id=alias,
+            camera_uid=uid,
+            camera_name=alias,
+            api_token="x" * 16,
+            session=FakeSession(),  # type: ignore[arg-type]
+            ffmpeg="ffmpeg",
+        ))
+    assert registry.get("camera1").camera_uid == "UID_ONE"  # type: ignore[union-attr]
+    assert registry.get("Camera1").camera_uid == "UID_TWO"  # type: ignore[union-attr]
+    with pytest.raises(ValueError):
+        registry.add(CameraBridge(
+            camera_id="bad/alias",
+            camera_uid="UID_THREE",
+            camera_name="Bad",
+            api_token="x" * 16,
+            session=FakeSession(),  # type: ignore[arg-type]
+            ffmpeg="ffmpeg",
+        ))
 
 
 def test_registry_keeps_camera_identifiers_and_runtimes_independent() -> None:

@@ -183,4 +183,5 @@ addresses, and any other private values before posting.
 - RTSP has no separate authentication; keep it on the trusted LAN.
 - Use the canonical UID first. If an alias is configured, it is a convenience
   route to the same session; unknown, duplicate, or colliding aliases are
-  rejected during startup.
+  rejected during startup. RTSP aliases are trimmed and case-sensitive; URL
+  decoding is applied before lookup.

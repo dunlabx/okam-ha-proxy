@@ -315,7 +315,14 @@ def _terminate_stream_process(process: subprocess.Popen[bytes]) -> None:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.wait(timeout=5)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(
+                    "native_stream_reap_timeout "
+                    f"process_pid={getattr(process, 'pid', None) or '-'}",
+                    flush=True,
+                )
 
 
 def _camera_password_override(
@@ -753,6 +760,47 @@ def configured_arp_routes(bridges: tuple[CameraBridge, ...]) -> dict[str, str]:
     return routes
 
 
+def handle_arp_wake(camera_uid: str, registry: BridgeRegistry) -> None:
+    """Coalesce ARP events and defer activation until stale cleanup is safe."""
+
+    bridge = registry.get(camera_uid)
+    if bridge is None:
+        return
+    status = bridge.session.status()
+    state = status.state
+    if state in {"STARTING", "AUTHENTICATING"}:
+        print(f"arp_wake_coalesced uid={camera_uid} state={state}", flush=True)
+        return
+    if state in {"CONNECTED", "STREAMING"} and status.running:
+        print(f"arp_wake_coalesced uid={camera_uid} state={state}", flush=True)
+        return
+    if state == "STOPPING" or (state in {"CONNECTED", "STREAMING"} and not status.running):
+        def deferred_activation() -> None:
+            try:
+                subscription = bridge.session.acquire(
+                    passive=False, reason="arp_wake", wake_before_connect=False
+                )
+            except Exception as error:
+                print(
+                    f"arp_wake_stream_failed uid={camera_uid} error={type(error).__name__}",
+                    flush=True,
+                )
+                return
+            subscription.close()
+
+        if bridge.session.defer_active_after_cleanup(deferred_activation):
+            print(f"arp_wake_deferred uid={camera_uid} state={state}", flush=True)
+            return
+    try:
+        subscription = bridge.session.acquire(
+            passive=False, reason="arp_wake", wake_before_connect=False
+        )
+    except Exception as error:
+        print(f"arp_wake_stream_failed uid={camera_uid} error={type(error).__name__}", flush=True)
+        return
+    subscription.close()
+
+
 def main() -> int:
     options = load_options()
     log_process_boundary("start")
@@ -796,31 +844,11 @@ def main() -> int:
                 raise RuntimeError("no selected camera runtime is available")
             ip_to_uid = configured_arp_routes(BRIDGES.values())
 
-            def on_arp_wake(camera_uid: str, _packet: object) -> None:
-                bridge = BRIDGES.get(camera_uid)
-                if bridge is None:
-                    return
-                state = bridge.session.status().state
-                if state in {"STARTING", "AUTHENTICATING", "CONNECTED", "STREAMING"}:
-                    print(
-                        f"arp_wake_coalesced uid={camera_uid} state={state}",
-                        flush=True,
-                    )
-                    return
-                try:
-                    subscription = bridge.session.acquire(
-                        passive=False, reason="arp_wake", wake_before_connect=False
-                    )
-                except Exception as error:
-                    print(f"arp_wake_stream_failed uid={camera_uid} error={type(error).__name__}", flush=True)
-                    return
-                subscription.close()
-
             arp_listener = start_arp_wake_listener(
                 logger=print,
                 enabled=options.get("arp_wake_listener", True) is True,
                 ip_to_camera_uid=ip_to_uid,
-                on_wake=on_arp_wake,
+                on_wake=lambda uid, _packet: handle_arp_wake(uid, BRIDGES),
             )
             print("startup_ready=true", flush=True)
     except Exception as error:

@@ -264,3 +264,22 @@ def test_build_fingerprint_reports_runtime_identity(entrypoint, monkeypatch, cap
     assert "runtime_module bridge=" in output
     assert "session=" in output and "auth=" in output
     assert "rtsp=" in output and "p2p=" in output
+
+
+def test_ready_status_does_not_start_or_wake_a_blocked_session(entrypoint):
+    app, _options, _logs = entrypoint
+    starts = []
+
+    def start():
+        starts.append(True)
+        return FakeProcess()
+
+    session = app.NativeStreamSession(start)  # type: ignore[arg-type]
+    app.BRIDGES.add(app.CameraBridge(
+        camera_id="front", camera_uid="UID_FRONT", camera_name="Front",
+        api_token="x" * 16, session=session, ffmpeg="ffmpeg",
+    ))
+    payload = app.get_status()
+    assert payload["camera_count"] == 1
+    assert starts == []
+    session.close()

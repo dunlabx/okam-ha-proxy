@@ -3,6 +3,7 @@ import json
 import struct
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
 
 import pytest
@@ -376,6 +377,118 @@ def test_authenticated_stream_waits_for_pre_media_auth_event(monkeypatch) -> Non
     assert result.connected is True
     assert result.authenticated is True
     assert result.login_result == 0
+
+
+def test_authenticated_stream_fails_fast_when_helper_exits(monkeypatch) -> None:
+    class Input:
+        def write(self, _value):
+            pass
+
+        def close(self):
+            pass
+
+    class Process:
+        stdin = Input()
+        stdout = object()
+        stderr = iter(())
+        returncode = 127
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    started = time.monotonic()
+    with pytest.raises(P2PError, match="exited before authentication.*exit_code=127"):
+        open_authenticated_stream_process(
+            "/helper", "/library", "UID", "service", "secret", environment={}, timeout=5
+        )
+    assert time.monotonic() - started < 1
+
+
+def test_authenticated_stream_early_exit_preserves_sanitized_stderr(monkeypatch) -> None:
+    class Input:
+        def write(self, _value):
+            pass
+
+        def close(self):
+            pass
+
+    class Process:
+        stdin = Input()
+        stdout = object()
+        stderr = iter((b"native failure password=supersecret\n",))
+        returncode = 1
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    with pytest.raises(P2PError) as caught:
+        open_authenticated_stream_process(
+            "/helper", "/library", "UID", "service", "secret", environment={}, timeout=5
+        )
+    assert "exit_code=1" in str(caught.value)
+    assert "password=<redacted>" in str(caught.value)
+    assert "supersecret" not in str(caught.value)
+
+
+def test_authenticated_stream_timeout_preserved_for_live_silent_helper(monkeypatch) -> None:
+    class Input:
+        def write(self, _value):
+            pass
+
+        def close(self):
+            pass
+
+    class SilentPipe:
+        def __iter__(self):
+            while True:
+                time.sleep(1)
+                yield b""
+
+    class Process:
+        stdin = Input()
+        stdout = object()
+        stderr = SilentPipe()
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def kill(self):
+            self.returncode = 9
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    started = time.monotonic()
+    with pytest.raises(P2PError, match="did not report authentication"):
+        open_authenticated_stream_process(
+            "/helper", "/library", "UID", "service", "secret", environment={}, timeout=0.05
+        )
+    assert time.monotonic() - started < 1
 
 
 def _stream_payload(**overrides: object) -> dict[str, object]:

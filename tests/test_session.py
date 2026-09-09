@@ -171,6 +171,160 @@ def test_status_remains_responsive_while_startup_owner_is_blocked() -> None:
     session.close()
 
 
+def test_passive_acquire_during_startup_receives_standby_without_waiting() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    frame = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"standby")
+
+    def start() -> FakeProcess:
+        entered.set()
+        assert release.wait(2)
+        return FakeProcess()
+
+    session = NativeStreamSession(start, standby_frame=frame)  # type: ignore[arg-type]
+    result: list[object] = []
+    owner = threading.Thread(target=lambda: result.append(session.acquire()))
+    owner.start()
+    assert entered.wait(2)
+    passive = session.acquire(passive=True)
+    assert session.status().viewers == 1
+    passive.close()
+    release.set()
+    owner.join(timeout=2)
+    assert len(result) == 1
+    result[0].close()  # type: ignore[union-attr]
+    session.close()
+
+
+def test_passive_subscriber_survives_startup_failure() -> None:
+    frame = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"standby")
+    entered = threading.Event()
+
+    def start() -> FakeProcess:
+        entered.set()
+        raise P2PError("startup failed")
+
+    session = NativeStreamSession(start, standby_frame=frame)  # type: ignore[arg-type]
+    owner_result: list[object] = []
+    owner = threading.Thread(target=lambda: owner_result.append(_capture(session.acquire)))
+    owner.start()
+    assert entered.wait(2)
+    passive = session.acquire(passive=True)
+    owner.join(timeout=2)
+    assert isinstance(owner_result[0], P2PError)
+    assert session.status().standby is True
+    passive.close()
+    session.close()
+
+
+def test_startup_failure_outcome_is_stable_for_waiter_before_next_generation() -> None:
+    first_started = threading.Event()
+    fail = threading.Event()
+    starts: list[int] = []
+    first = FakeProcess()
+    second = FakeProcess()
+
+    def start() -> FakeProcess:
+        starts.append(len(starts) + 1)
+        if len(starts) == 1:
+            first_started.set()
+            assert fail.wait(2)
+            raise P2PError("generation one failed")
+        return second
+
+    session = NativeStreamSession(start)  # type: ignore[arg-type]
+    owner_result: list[object] = []
+    waiter_result: list[object] = []
+    owner = threading.Thread(target=lambda: owner_result.append(_capture(session.acquire)))
+    owner.start()
+    assert first_started.wait(2)
+    operation = session._startup_operation
+    assert operation is not None
+
+    class DelayedEvent:
+        def __init__(self) -> None:
+            self.ready = threading.Event()
+            self.release = threading.Event()
+            self.wait_started = threading.Event()
+
+        def set(self) -> None:
+            self.ready.set()
+
+        def wait(self) -> bool:
+            self.wait_started.set()
+            self.ready.wait(2)
+            return self.release.wait(2)
+
+    delayed = DelayedEvent()
+    operation.done = delayed  # type: ignore[assignment]
+    waiter = threading.Thread(target=lambda: waiter_result.append(_capture(session.acquire)))
+    waiter.start()
+    assert delayed.wait_started.wait(2)
+    fail.set()
+    owner.join(timeout=2)
+    assert isinstance(owner_result[0], P2PError)
+    third = session.acquire()
+    assert starts == [1, 2]
+    delayed.release.set()
+    waiter.join(timeout=2)
+    assert isinstance(waiter_result[0], P2PError)
+    third.close()
+    session.close()
+
+
+def test_deferred_activation_survives_cleanup_and_runs_once() -> None:
+    old = FakeProcess()
+    new = FakeProcess()
+    starts = 0
+
+    def start() -> FakeProcess:
+        nonlocal starts
+        starts += 1
+        return old if starts == 1 else new
+
+    session = NativeStreamSession(start, idle_timeout=10)  # type: ignore[arg-type]
+    active = session.acquire()
+    with session._lock:
+        session._set_state_locked("STOPPING")
+    called = threading.Event()
+
+    def deferred() -> None:
+        subscription = session.acquire(reason="arp_wake", wake_before_connect=False)
+        subscription.close()
+        called.set()
+
+    assert session.defer_active_after_cleanup(deferred) is True
+    old.terminate()
+    active.close()
+    assert called.wait(2)
+    assert starts == 2
+    session.close()
+
+
+def test_final_kill_wait_timeout_is_reported_without_raising() -> None:
+    lines: list[str] = []
+
+    class NeverReaps:
+        pid = 123
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("never-reaps", timeout)
+
+    session = NativeStreamSession(lambda: FakeProcess(), logger=lines.append)  # type: ignore[arg-type]
+    session._terminate(NeverReaps())  # type: ignore[arg-type]
+    assert any("native_process_reap_timeout process_pid=123" in line for line in lines)
+    session.close()
+
+
 def test_shutdown_wakes_waiters_during_startup_without_publishing_process() -> None:
     entered = threading.Event()
     release = threading.Event()
@@ -397,6 +551,36 @@ def test_stale_idle_timer_cannot_terminate_newer_process():
     session._stop_if_idle(1, old)  # type: ignore[arg-type]
     assert current.poll() is None
     session.close()
+
+
+def test_stale_pump_cleanup_cannot_mutate_newer_generation():
+    old = FakeProcess()
+    old.terminate()
+    current = FakeProcess()
+    session = NativeStreamSession(lambda: current)  # type: ignore[arg-type]
+    with session._lock:
+        session._process = current
+        session._process_generation = 2
+        session._state = "CONNECTED"
+    old.stdout.chunks.put(None)
+    class NoJoin:
+        def join(self, timeout=None):
+            pass
+
+    session._pump(old, NoJoin(), 1, threading.Event())  # type: ignore[arg-type]
+    assert session._process is current
+    assert session._process_generation == 2
+    session.close()
+
+
+def test_shutdown_discards_deferred_activation():
+    session = NativeStreamSession(lambda: FakeProcess())  # type: ignore[arg-type]
+    with session._lock:
+        session._state = "STOPPING"
+    called = threading.Event()
+    assert session.defer_active_after_cleanup(called.set) is True
+    session.close()
+    assert not called.is_set()
 
 
 def _unit(kind: int, body: bytes = b"\x00") -> bytes:

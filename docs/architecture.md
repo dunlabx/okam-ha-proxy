@@ -30,7 +30,9 @@ session and produce a real snapshot.
 The authenticated HTTP API accepts either the legacy local alias or the
 selected UID in `/api/cameras/<identifier>/...`. The RTSP listener uses the
 canonical UID path and an optional alias: `rtsp://HOST:8100/<camera_uid>` or
-`rtsp://HOST:8100/<alias>`. Both routes select the same per-camera session.
+`rtsp://HOST:8100/<alias>`. Alias routes trim surrounding whitespace, preserve
+case, and reject path separators/control characters. Both routes select the
+same per-camera session.
 
 ## Camera lifecycle
 

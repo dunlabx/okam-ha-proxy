@@ -162,14 +162,27 @@ class BridgeRegistry:
 
     @staticmethod
     def _route_key(value: str) -> str:
-        return unicodedata.normalize("NFC", value.strip()).casefold()
+        return unicodedata.normalize("NFC", value.strip())
+
+    @classmethod
+    def _alias_key(cls, value: str) -> str:
+        normalized = cls._route_key(value)
+        if any(ord(character) < 0x20 or character == "\x7f" for character in normalized):
+            raise ValueError("camera alias contains a control character")
+        if "/" in normalized:
+            raise ValueError("camera alias contains a path separator")
+        return normalized
 
     def add(self, bridge: CameraBridge) -> None:
         with self._lock:
-            identifiers = {self._route_key(bridge.camera_id), self._route_key(bridge.camera_uid)}
+            alias_key = self._alias_key(bridge.camera_id)
+            identifiers = {self._route_key(bridge.camera_uid)}
+            if alias_key:
+                identifiers.add(alias_key)
             existing = {
                 self._route_key(item.camera_id)
                 for item in self._bridges.values()
+                if item.camera_id.strip()
             } | {
                 self._route_key(item.camera_uid)
                 for item in self._bridges.values()
@@ -178,7 +191,7 @@ class BridgeRegistry:
                 raise ValueError("duplicate camera identifier")
             self._bridges[bridge.camera_id] = bridge
             if bridge.camera_id != bridge.camera_uid and bridge.camera_id.strip():
-                self._aliases[self._route_key(bridge.camera_id)] = bridge
+                self._aliases[alias_key] = bridge
 
     def get(self, identifier: str) -> CameraBridge | None:
         if not identifier.strip():
@@ -343,9 +356,12 @@ def make_handler(
             if bridge is None:
                 self._json(404 if camera_identifier else 503, {"error": "camera_not_found" if camera_identifier else "bridge_not_ready"})
                 return
+            camera_identifiers = {bridge.camera_uid, bridge.camera_id}
+            if bridge.camera_id.strip():
+                camera_identifiers.add(bridge.camera_id.strip())
             camera_prefixes = {
-                f"/api/cameras/{quote(bridge.camera_id, safe='')}",
-                f"/api/cameras/{quote(bridge.camera_uid, safe='')}",
+                f"/api/cameras/{quote(identifier, safe='')}"
+                for identifier in camera_identifiers
             }
             stream_paths = tuple(
                 f"{prefix}/stream.{suffix}"
@@ -381,9 +397,12 @@ def make_handler(
             if bridge is None:
                 return
             path = urlsplit(self.path).path
+            camera_identifiers = {bridge.camera_uid, bridge.camera_id}
+            if bridge.camera_id.strip():
+                camera_identifiers.add(bridge.camera_id.strip())
             camera_prefixes = {
-                f"/api/cameras/{quote(bridge.camera_id, safe='')}",
-                f"/api/cameras/{quote(bridge.camera_uid, safe='')}",
+                f"/api/cameras/{quote(identifier, safe='')}"
+                for identifier in camera_identifiers
             }
             if not any(path == f"{prefix}/config" for prefix in camera_prefixes):
                 self._json(404, {"error": "not_found"})
@@ -586,7 +605,15 @@ def make_handler(
                         muxer.wait(timeout=5)
                     except subprocess.TimeoutExpired:
                         muxer.kill()
-                        muxer.wait(timeout=5)
+                        try:
+                            muxer.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            print(
+                                "bridge_muxer_reap_timeout "
+                                f"process_pid={getattr(muxer, 'pid', None) or '-'}",
+                                file=sys.stderr,
+                                flush=True,
+                            )
                 if writer is not None:
                     writer.join(timeout=2)
                 _session_diagnostic(

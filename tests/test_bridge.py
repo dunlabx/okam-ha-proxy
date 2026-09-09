@@ -273,6 +273,134 @@ def test_keep_alive_requests_get_independent_timing(capsys) -> None:
     assert capsys.readouterr().err.count("event=slow_status_request") == 2
 
 
+def test_http_alias_routes_use_trimmed_case_sensitive_identity() -> None:
+    bridge = CameraBridge(
+        camera_id=" Front Door ",
+        camera_uid="UID_FRONT",
+        camera_name="Front",
+        api_token="safe-token-123",
+        session=FakeSession(),  # type: ignore[arg-type]
+        ffmpeg="/nonexistent/ffmpeg",
+    )
+    registry = BridgeRegistry()
+    registry.add(bridge)
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), make_handler(lambda: {}, lambda: registry)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        code, _content_type, _payload = request(
+            server, "GET", "/api/cameras/Front%20Door/status", token="safe-token-123"
+        )
+        assert code == 200
+        code, _content_type, _payload = request(
+            server, "GET", "/api/cameras/front%20door/status", token="safe-token-123"
+        )
+        assert code == 404
+        code, content_type, payload = request(
+            server,
+            "GET",
+            "/api/cameras/Front%20Door/snapshot.jpg",
+            token="safe-token-123",
+        )
+        assert code == 200
+        assert content_type == "image/jpeg"
+        assert payload.startswith(b"\xff\xd8")
+        stream_token = bridge.stream_url(None).split("token=", 1)[1]
+        code, content_type, payload = request(
+            server,
+            "GET",
+            "/api/cameras/Front%20Door/stream.h264?token=" + stream_token,
+        )
+        assert code == 200
+        assert content_type == "video/h264"
+        assert payload.endswith(b"h264")
+        code, _content_type, _payload = request(
+            server,
+            "GET",
+            "/api/cameras/Front%20Door/stream.ts?token=" + stream_token,
+        )
+        assert code == 503
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+def test_slow_http_stream_client_does_not_block_another_client() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Subscription:
+        def __init__(self, payload: bytes):
+            self.payload = payload
+
+        def __iter__(self):
+            yield self.payload
+
+        def close(self):
+            pass
+
+    class Session:
+        def __init__(self):
+            self.calls = 0
+
+        def acquire(self, *, reason):
+            self.calls += 1
+            return Subscription(b"slow" if self.calls == 1 else b"fast")
+
+        def status(self):
+            return SessionStatus(False, 0, True, None, False)
+
+    class WFile:
+        def __init__(self, slow):
+            self.slow = slow
+            self.sent = []
+
+        def write(self, payload):
+            if self.slow:
+                entered.set()
+                assert release.wait(2)
+            self.sent.append(payload)
+
+        def flush(self):
+            pass
+
+    class Connection:
+        def settimeout(self, _timeout):
+            pass
+
+    session = Session()
+    bridge = CameraBridge(
+        camera_id="front", camera_uid="UID_FRONT", camera_name="Front",
+        api_token="safe-token-123", session=session, ffmpeg="ffmpeg",
+    )
+    handler_type = make_handler(lambda: {}, lambda: bridge)
+
+    def handler(wfile):
+        value = object.__new__(handler_type)
+        value.wfile = wfile
+        value.connection = Connection()
+        value.send_response = lambda _code: None
+        value.send_header = lambda _key, _item: None
+        value.end_headers = lambda: None
+        return value
+
+    slow = handler(WFile(True))
+    fast = handler(WFile(False))
+    slow_thread = threading.Thread(target=slow._raw_stream, args=(bridge,))
+    slow_thread.start()
+    assert entered.wait(1)
+    fast_thread = threading.Thread(target=fast._raw_stream, args=(bridge,))
+    fast_thread.start()
+    fast_thread.join(timeout=1)
+    assert not fast_thread.is_alive()
+    release.set()
+    slow_thread.join(timeout=2)
+    assert not slow_thread.is_alive()
+
+
 def test_dropped_clients_do_not_report_a_crash(capsys) -> None:
     # The supervisor polls the bridge and closes connections abruptly. The
     # default handler prints a traceback and the peer address for each one.
