@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -78,7 +79,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert re.fullmatch(r"2\.0\.0(?:-rc1)?", str(config["version"]))
+    assert re.fullmatch(r"2\.0\.0(?:-rc[12])?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["startup"] == "application"
     assert config["boot"] == "auto"
@@ -146,6 +147,20 @@ def test_native_image_excludes_windows_gui_runtime() -> None:
     assert "runtime-amd64" in dockerfile
     assert "runtime-arm64" in dockerfile
     assert "FROM runtime-${TARGETARCH} AS final" in dockerfile
+    assert "COPY okam_native_app/battery_cam.png /tmp/battery_cam.png" in dockerfile
+    assert "-loop 1 -i /tmp/battery_cam.png" in dockerfile
+    assert "scale=2304:1296:force_original_aspect_ratio=decrease" in dockerfile
+    assert "-profile:v high -level:v 5.0" in dockerfile
+    assert "-coder 1 -8x8dct 1" in dockerfile
+    assert "color=c=black:s=640x480" not in dockerfile
+
+
+def test_battery_standby_artwork_is_the_supplied_source_image() -> None:
+    artwork = ROOT / "okam_native_app" / "battery_cam.png"
+    assert artwork.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert hashlib.sha256(artwork.read_bytes()).hexdigest() == (
+        "808be26b9d2da520ae7dc6aa825413a262e3d546a9300419ef8aacaa76cff174"
+    )
 
 
 def test_status_distinguishes_loader_from_camera_acceptance() -> None:
@@ -184,6 +199,9 @@ def test_publish_workflow_builds_one_multi_architecture_image() -> None:
     assert workflow.count("docker/build-push-action@v6") == 1
     assert "-candidate-${GITHUB_SHA}-" in workflow
     assert "Promote the exact architecture artifacts" in workflow
+    assert "--entrypoint /usr/bin/ldd" in workflow
+    assert "assert p.returncode != 127" in workflow
+    assert "--network none" in workflow
 
 
 def test_repository_contains_camera_integration_for_native_api() -> None:

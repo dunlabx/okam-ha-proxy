@@ -189,6 +189,22 @@ jobs:
           done
           docker run --rm --platform '${{ matrix.platform }}' -e PYTHONPATH=/opt/okam --entrypoint python3 "$IMAGE" -c \
             'import os,sys,os.path,okam_native,okam_native.auth,okam_native.bridge,okam_native.session,okam_native.rtsp,okam_native.p2p; print("sys.path",sys.path); print("PYTHONPATH",os.environ.get("PYTHONPATH")); print("cwd",os.getcwd()); print("modules",okam_native.__file__,okam_native.auth.__file__,okam_native.bridge.__file__,okam_native.session.__file__,okam_native.rtsp.__file__,okam_native.p2p.__file__); print("fingerprint",os.environ.get("OKAM_BUILD_VERSION"),os.environ.get("OKAM_BUILD_COMMIT"))'
+          if [ "${{ matrix.arch }}" = "arm64" ]; then
+            # The ARM helper must pass dynamic loading before any camera I/O.
+            # ldd is inspection-only; the no-network invocation reaches the
+            # helper's own missing-vendor-input path and must not exit 127.
+            docker run --rm --platform '${{ matrix.platform }}' --entrypoint /usr/bin/ldd "$IMAGE" \
+              /opt/okam/okam-hybris-connect | tee /tmp/okam-arm64-ldd.txt
+            ! grep -q 'not found' /tmp/okam-arm64-ldd.txt
+            docker run --rm --network none --platform '${{ matrix.platform }}' \
+              -e LD_LIBRARY_PATH=/opt/hybris/lib \
+              -e HYBRIS_LINKER_DIR=/opt/hybris/lib/libhybris/linker \
+              -e HYBRIS_ANDROID_SDK_VERSION=28 \
+              -e HYBRIS_LD_LIBRARY_PATH=/opt/android-stubs:/opt/bionic:/data/vendor \
+              -e HELPER=/opt/okam/okam-hybris-connect \
+              --entrypoint python3 "$IMAGE" -c \
+              'import os, subprocess; p=subprocess.run([os.environ["HELPER"], "/data/vendor/libOKSMARTPPCS.so"], input=b"UID_SMOKE\\nservice\\n", stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10); print(p.stderr.decode("utf-8", "replace")); assert p.returncode != 127, p.returncode'
+          fi
 
   prepare:
     runs-on: ubuntu-latest

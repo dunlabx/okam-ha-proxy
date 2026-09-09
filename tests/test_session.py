@@ -597,6 +597,28 @@ def test_new_viewer_starts_on_a_decodable_boundary() -> None:
     assert session._preamble() == sps + pps + idr
 
 
+def test_media_generation_changes_once_for_live_and_standby_codec_transitions() -> None:
+    standby = _unit(7, b"standby-sps") + _unit(8, b"standby-pps") + _unit(5, b"standby-idr")
+    session = NativeStreamSession(lambda: FakeProcess(), standby_frame=standby)  # type: ignore[arg-type]
+    assert session.media_generation() == 0
+
+    session._record_unit(_unit(7, b"live-sps"))
+    session._record_unit(_unit(8, b"live-pps"))
+    session._record_unit(_unit(5, b"live-idr"))
+    assert session.media_generation() == 1
+
+    # Repeated live parameter sets do not create another transition.
+    session._record_unit(_unit(7, b"live-sps"))
+    session._record_unit(_unit(8, b"live-pps"))
+    session._record_unit(_unit(5, b"live-idr-2"))
+    assert session.media_generation() == 1
+
+    with session._lock:
+        session._restore_standby_media_locked()
+    assert session.media_generation() == 2
+    assert session.media_generation() == 2
+
+
 def test_media_units_are_reassembled_across_chunk_boundaries() -> None:
     session = NativeStreamSession(lambda: FakeProcess())  # type: ignore[arg-type]
     stream = _unit(7, b"sps") + _unit(8, b"pps") + _unit(5, b"idr") + _unit(1, b"x")

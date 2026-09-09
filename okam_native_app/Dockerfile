@@ -98,11 +98,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /out
+COPY okam_native_app/battery_cam.png /tmp/battery_cam.png
 RUN ffmpeg -hide_banner -loglevel error \
-    -f lavfi -i "color=c=black:s=640x480:r=1" \
-    -vf "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='Camera standby':fontcolor=white:fontsize=32:x=(w-text_w)/2:y=(h-text_h)/2" \
-    -frames:v 1 -c:v libx264 -preset ultrafast -tune stillimage \
-    -pix_fmt yuv420p -f h264 /out/standby.h264
+    -loop 1 -i /tmp/battery_cam.png \
+    -vf "scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2:black,format=yuv420p" \
+    -frames:v 1 -c:v libx264 -profile:v high -level:v 5.0 \
+    -preset ultrafast -tune stillimage -coder 1 -8x8dct 1 \
+    -x264-params "keyint=1:min-keyint=1:scenecut=0" \
+    -f h264 /out/standby.h264
 
 FROM python:3.12-slim-bookworm AS runtime-base
 ARG BUILD_VERSION=1.2.3

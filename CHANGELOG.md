@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.0-rc2
+
+- Reconnects an affected RTSP client once when a battery-camera standby/live
+  H.264 SPS/PPS generation changes, allowing browser recording playback to
+  start a fresh media description without restarting the shared native session
+  or transcoding the camera stream.
+- Uses the supplied `battery_cam.png` artwork as the build-time 2304x1296
+  H.264 standby frame and documents the exact source checksum.
+
 ## 2.0.0
 
 - Keeps one native stream session per physical camera while allowing concurrent

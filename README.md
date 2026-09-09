@@ -50,9 +50,9 @@ The app is published as one multi-architecture image:
 | `aarch64` | Raspberry Pi 3, 4, or 5 running a 64-bit OS; other 64-bit ARM hosts |
 | `amd64` | Intel or AMD mini PCs, servers, and virtual machines |
 
-Raspberry Pi 4 is physically validated. Raspberry Pi 3 is eligible when it is
-running a 64-bit Home Assistant installation, but its lower performance has not
-been measured. A 32-bit installation cannot install this app. Check the value
+Raspberry Pi 4 and Raspberry Pi 5 are physically validated. Raspberry Pi 3 is
+eligible when it is running a 64-bit Home Assistant installation, but its lower
+performance has not been measured. A 32-bit installation cannot install this app. Check the value
 shown under **Settings → System → Repairs → System information → Architecture**
 if you are unsure.
 
@@ -151,6 +151,12 @@ capture the startup and native helper logs, and disable it immediately
 afterward. The option prints camera/device passwords in plaintext, never the
 O-KAM account password, API token, or session secrets; treat those logs as
 secrets and do not share them.
+
+The battery-camera standby card is built from the checked-in
+`okam_native_app/battery_cam.png` image (SHA-256
+`808be26b9d2da520ae7dc6aa825413a262e3d546a9300419ef8aacaa76cff174`). It is
+encoded at build time as a single-frame, padded 2304x1296 H.264 placeholder;
+the native camera stream remains H.264 passthrough.
 
 ### 3. Install the Home Assistant integration
 

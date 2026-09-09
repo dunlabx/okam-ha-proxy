@@ -66,6 +66,138 @@ def test_rtp_marker_is_only_on_last_packet_of_access_unit() -> None:
     assert not any(packet[0][1] & 0x80 for packet in packets)
 
 
+def test_standby_to_live_reconnects_only_the_affected_rtsp_client() -> None:
+    class Subscription:
+        def __iter__(self):
+            yield (
+                b"\x00\x00\x01\x67standby\x00\x00\x01\x68pps"
+                b"\x00\x00\x01\x65\x80\x00\x00\x01\x67next"
+                b"\x00\x00\x01\x68pps2\x00\x00\x01\x65\x81"
+            )
+            session.generation = 1
+            session.running = True
+            session.ready = True
+            yield b"\x00\x00\x01\x67live\x00\x00\x01\x68pps\x00\x00\x01\x65\x80"
+
+    class Session:
+        generation = 0
+        running = False
+        ready = False
+
+        def media_generation(self):
+            return self.generation
+
+        def status(self):
+            return SessionStatus(self.running, 1, None, None, self.ready)
+
+    class Request:
+        def __init__(self):
+            self.sent = []
+            self.shutdown_called = False
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+        def shutdown(self, _how):
+            self.shutdown_called = True
+
+    session = Session()
+    bridge = CameraBridge(
+        camera_id="UID_TRANSITION",
+        camera_uid="UID_TRANSITION",
+        camera_name="Transition",
+        api_token="token",
+        session=session,  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    handler = object.__new__(_RTSPHandler)
+    handler.request = Request()
+    handler._bridge = bridge
+    handler._subscription = Subscription()
+    handler._stop_stream = threading.Event()
+    handler._rtp_channel = 0
+    handler._write_lock = threading.Lock()
+    handler._media_generation = 0
+    handler._codec_transition_seen = False
+    handler._diagnostic_camera = bridge
+    handler._diagnostic_started = time.monotonic()
+    handler._rtsp_bytes = 0
+    handler._rtsp_chunks = 0
+    handler._saw_standby = False
+    handler._saw_live = False
+    handler._diagnostic = lambda *_args, **_kwargs: None
+
+    handler._stream()
+
+    assert handler.request.shutdown_called is True
+    assert handler._codec_transition_seen is True
+    assert session.running is True
+    assert len(handler.request.sent) > 0
+
+
+def test_live_to_standby_reconnects_once_without_restarting_native_session() -> None:
+    class Session:
+        generation = 1
+        running = True
+        ready = True
+
+        def media_generation(self):
+            return self.generation
+
+        def status(self):
+            return SessionStatus(self.running, 1, None, None, self.ready)
+
+    class Subscription:
+        def __iter__(self):
+            yield b"\x00\x00\x01\x67live\x00\x00\x01\x68pps\x00\x00\x01\x65\x80"
+            session.generation = 2
+            session.running = False
+            session.ready = False
+            yield b"\x00\x00\x01\x67standby\x00\x00\x01\x68pps\x00\x00\x01\x65\x80"
+
+    class Request:
+        def __init__(self):
+            self.shutdown_called = False
+
+        def sendall(self, _payload):
+            pass
+
+        def shutdown(self, _how):
+            self.shutdown_called = True
+
+    session = Session()
+    bridge = CameraBridge(
+        camera_id="UID_RESTORE",
+        camera_uid="UID_RESTORE",
+        camera_name="Restore",
+        api_token="token",
+        session=session,  # type: ignore[arg-type]
+        ffmpeg="ffmpeg",
+    )
+    handler = object.__new__(_RTSPHandler)
+    handler.request = Request()
+    handler._bridge = bridge
+    handler._subscription = Subscription()
+    handler._stop_stream = threading.Event()
+    handler._rtp_channel = 0
+    handler._write_lock = threading.Lock()
+    handler._media_generation = 1
+    handler._codec_transition_seen = False
+    handler._diagnostic_camera = bridge
+    handler._diagnostic_started = time.monotonic()
+    handler._rtsp_bytes = 0
+    handler._rtsp_chunks = 0
+    handler._saw_standby = False
+    handler._saw_live = False
+    handler._diagnostic = lambda *_args, **_kwargs: None
+
+    handler._stream()
+
+    assert handler.request.shutdown_called is True
+    assert handler._codec_transition_seen is True
+    assert session.running is False
+
+
 def test_slow_rtsp_client_does_not_block_another_client() -> None:
     entered = threading.Event()
     release = threading.Event()

@@ -106,6 +106,23 @@ installing or updating the custom integration.
 Also verify that the configured bridge URL is reachable from Home Assistant,
 not only from another computer's browser.
 
+## Frigate recordings stop playing after standby becomes live
+
+Battery cameras intentionally send a synthetic standby H.264 frame until ARP
+wake. The first real camera frame can use a different SPS/PPS codec description.
+When that boundary is detected, the RTSP client connection is closed once so
+Frigate/go2rtc reconnects and receives a fresh SDP and H.264 keyframe for the
+new media generation. The shared native camera session is kept alive; no
+transcoding or second physical wake is performed. A browser recording that
+spans the boundary may therefore contain two segments, while VLC or FFmpeg can
+often decode the original continuous sample stream.
+
+If playback still fails, force RTSP-over-TCP in Frigate, confirm the RTSP URL
+uses the canonical camera UID, and collect the add-on log markers
+`h264_codec_transition` and `rtsp_codec_transition_reconnect` together with
+the Frigate/go2rtc reconnect timestamp. Do not include account credentials,
+camera passwords, API tokens, or packet payloads in a report.
+
 ## The camera entity has a numeric suffix
 
 Home Assistant adds a suffix when the requested entity ID is already occupied.

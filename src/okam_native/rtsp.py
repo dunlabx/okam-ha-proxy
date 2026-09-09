@@ -285,6 +285,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._rtsp_chunks = 0
         self._saw_standby = False
         self._saw_live = False
+        self._media_generation: int | None = None
+        self._codec_transition_seen = False
 
     def _diagnostic(self, event: str, **fields: object) -> None:
         bridge = self._diagnostic_camera
@@ -354,6 +356,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         bridge = self.server.registry.get(identifier) if identifier else None
         if bridge is not None and self._diagnostic_camera is None:
             self._diagnostic_camera = bridge
+            generation = getattr(bridge.session, "media_generation", None)
+            self._media_generation = generation() if callable(generation) else None
             self._diagnostic("rtsp_client_connected")
 
         if method == "OPTIONS":
@@ -450,13 +454,38 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             for chunk in self._subscription:
                 if self._stop_stream.is_set():
                     return
+                generation_reader = getattr(self._bridge.session, "media_generation", None)
+                generation = generation_reader() if callable(generation_reader) else None
+                status = getattr(self._bridge.session, "status", lambda: None)()
+                live_media = bool(getattr(status, "running", False) and getattr(status, "media_ready", False))
+                codec_changed = (
+                    generation is not None
+                    and self._media_generation is not None
+                    and generation != self._media_generation
+                )
+                if (
+                    codec_changed
+                    and not self._codec_transition_seen
+                    and ((self._saw_standby and live_media) or self._saw_live)
+                ):
+                    self._codec_transition_seen = True
+                    self._diagnostic(
+                        "rtsp_codec_transition_reconnect",
+                        from_generation=self._media_generation,
+                        to_generation=generation,
+                    )
+                    self._stop_stream.set()
+                    try:
+                        self.request.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                    return
                 self._rtsp_chunks += 1
                 self._rtsp_bytes += len(chunk)
                 if not self._saw_standby:
                     self._saw_standby = True
                     self._diagnostic("rtsp_first_standby_frame", bytes=len(chunk))
                 if not self._saw_live:
-                    status = getattr(self._bridge.session, "status", lambda: None)()
                     if getattr(status, "running", False) and getattr(status, "media_ready", False):
                         self._saw_live = True
                         self._diagnostic("rtsp_first_live_chunk", bytes=len(chunk))

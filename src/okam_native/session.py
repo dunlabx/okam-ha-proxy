@@ -119,6 +119,8 @@ class NativeStreamSession:
         self._sps = b""
         self._pps = b""
         self._keyframe = b""
+        self._media_generation = 0
+        self._pending_media_change = False
         self._standby_frame = standby_frame or b""
         self._standby_interval = max(0.1, standby_interval)
         self._standby_thread: threading.Thread | None = None
@@ -135,6 +137,8 @@ class NativeStreamSession:
             # Standby media is a synthetic placeholder.  Do not let it consume
             # the first-live SPS/PPS/IDR diagnostics or frame counters.
             self._h264_frame_count = 0
+            self._media_generation = 0
+            self._pending_media_change = False
             self._diagnostic_events.clear()
         else:
             self._standby_media = (b"", b"", b"")
@@ -453,12 +457,20 @@ class NativeStreamSession:
             return
         kind = unit[prefix] & 0x1F
         if kind == 7:
+            if self._sps and self._sps != unit:
+                self._pending_media_change = True
             self._sps = unit
             self._diagnostic("first_h264_sps", bytes=len(unit))
         elif kind == 8:
+            if self._pps and self._pps != unit:
+                self._pending_media_change = True
             self._pps = unit
             self._diagnostic("first_h264_pps", bytes=len(unit))
         elif kind == 5:
+            if self._pending_media_change:
+                self._media_generation += 1
+                self._pending_media_change = False
+                self._diagnostic("h264_codec_transition", media_generation=self._media_generation)
             self._keyframe = unit
             self._h264_frame_count += 1
             self._diagnostic("first_h264_idr", bytes=len(unit))
@@ -498,6 +510,12 @@ class NativeStreamSession:
 
         with self._lock:
             return self._sps, self._pps
+
+    def media_generation(self) -> int:
+        """Return the monotonically increasing downstream codec generation."""
+
+        with self._lock:
+            return self._media_generation
 
     def close(self) -> None:
         with self._lock:
@@ -543,6 +561,7 @@ class NativeStreamSession:
         # A new helper means a new encoder state, so cached units are stale.
         self._scan.clear()
         self._sps = self._pps = self._keyframe = b""
+        self._pending_media_change = False
         self._helper_stdout_bytes = 0
         self._helper_stdout_chunks = 0
         self._h264_frame_count = 0
@@ -858,7 +877,11 @@ class NativeStreamSession:
 
     def _restore_standby_media_locked(self) -> None:
         self._scan.clear()
+        if (self._sps, self._pps) != self._standby_media[:2] and (self._sps or self._pps):
+            self._media_generation += 1
+            self._diagnostic("h264_codec_transition", media_generation=self._media_generation)
         self._sps, self._pps, self._keyframe = self._standby_media
+        self._pending_media_change = False
         self._media_ready = False
 
     def _terminate(self, process: subprocess.Popen[bytes] | None) -> None:
