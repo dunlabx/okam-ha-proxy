@@ -78,7 +78,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert re.fullmatch(r"2\.0\.0", str(config["version"]))
+    assert re.fullmatch(r"2\.0\.0(?:-rc1)?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["startup"] == "application"
     assert config["boot"] == "auto"
