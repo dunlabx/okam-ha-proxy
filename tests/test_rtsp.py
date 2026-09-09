@@ -1,6 +1,7 @@
 import socket
 import threading
 import time
+import pytest
 
 from okam_native.bridge import BridgeRegistry, CameraBridge
 from okam_native.rtsp import RTSPServer, _AccessUnitAssembler, _frame_ticks_from_sps, _nal_units, _rtp_packets, _sdp
@@ -85,7 +86,10 @@ def test_registry_keeps_camera_identifiers_and_runtimes_independent() -> None:
     assert registry.status()["camera_count"] == 2
 
 
-def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
+@pytest.mark.parametrize(("battery_camera", "expected_passive"), [(True, True), (False, False)])
+def test_rtsp_play_uses_mode_specific_shared_camera_subscription(
+    battery_camera: bool, expected_passive: bool
+) -> None:
     class Subscription:
         def __init__(self) -> None:
             self.closed = False
@@ -123,6 +127,7 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
         api_token="token",
         session=session,  # type: ignore[arg-type]
         ffmpeg="ffmpeg",
+        battery_camera=battery_camera,
     )
     registry = BridgeRegistry()
     registry.add(bridge)
@@ -145,7 +150,7 @@ def test_rtsp_play_acquires_one_shared_camera_subscription() -> None:
         while session.acquires < 1 and time.monotonic() < deadline:
             time.sleep(0.01)
         assert session.acquires == 1
-        assert session.passive is True
+        assert session.passive is expected_passive
         client.sendall(b"TEARDOWN rtsp://127.0.0.1/UID_RTSP RTSP/1.0\r\nCSeq: 4\r\n\r\n")
     finally:
         client.close()

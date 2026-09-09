@@ -95,6 +95,8 @@ class CameraBridge:
         api_token: str,
         session: NativeStreamSession,
         ffmpeg: str,
+        battery_camera: bool = True,
+        camera_ip: str | None = None,
     ) -> None:
         self.camera_id = camera_id
         self.camera_uid = camera_uid or camera_id
@@ -103,6 +105,8 @@ class CameraBridge:
         self._stream_token = secrets.token_urlsafe(32)
         self.session = session
         self.ffmpeg = ffmpeg
+        self.battery_camera = battery_camera
+        self.camera_ip = camera_ip
 
     def authenticated(self, authorization: str | None) -> bool:
         expected = f"Bearer {self._api_token}"

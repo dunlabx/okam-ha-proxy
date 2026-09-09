@@ -214,6 +214,8 @@ jobs:
           # latest must only ever follow main. A test build published from a
           # branch must not repoint the tag that installations track.
           if [ "${GITHUB_REF}" = "refs/heads/main" ] \
+             && [ -z "${TAG_SUFFIX:-}" ] \
+             && [[ "${base}" != *-* ]] \
              && { [ "${GITHUB_EVENT_NAME}" = "push" ] || [ "${REQUEST_LATEST:-false}" = "true" ]; }; then
             echo "move_latest=true" >> "$GITHUB_OUTPUT"
           else

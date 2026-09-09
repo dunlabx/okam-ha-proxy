@@ -232,6 +232,28 @@ def test_automatic_auth_method_ignores_supplied_password() -> None:
     assert selected[0].password is None
 
 
+def test_camera_mode_defaults_to_battery_and_normalizes_ipv4() -> None:
+    devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
+    selected = configured_camera_selections(
+        devices,
+        {"cameras": [
+            {"uid": "A", "ip": "192.168.1.140"},
+            {"uid": "B", "battery_camera": False},
+        ]},
+    )
+    assert selected[0].battery_camera is True and selected[0].camera_ip == "192.168.1.140"
+    assert selected[1].battery_camera is False and selected[1].camera_ip is None
+
+
+@pytest.mark.parametrize("ip", ["", "999.1.1.1", "example.com", "192.168.1", "2001:db8::1"])
+def test_camera_ip_rejects_invalid_values(ip: str) -> None:
+    with pytest.raises(AccountError):
+        configured_camera_selections(
+            [AccountDevice("A", "Front", "pw")],
+            {"cameras": [{"uid": "A", "ip": ip}]},
+        )
+
+
 def test_legacy_auth_mode_values_migrate_to_auth_method() -> None:
     devices = [AccountDevice("A", "Front", "account-a"), AccountDevice("B", "Back", "account-b")]
     selected = configured_camera_selections(

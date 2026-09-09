@@ -1,10 +1,31 @@
 # Changelog
 
+## 1.2.18
+
+- Adds per-camera sleep-mode and local IPv4 configuration.
+- Productionizes receive-only ARP wake routing for battery cameras and
+  switches their existing standby RTSP session to the shared native stream
+  without sending a second wake request.
+- Normal cameras use active RTSP startup; existing H.264 passthrough and
+  multi-camera session isolation are preserved.
+
 ## 1.2.17
 
 - Restores the pre-login native timing path after diagnostic instrumentation.
 - Prevents a reconnect from overlapping the previous helper's cleanup.
 - Adds absolute timestamps and process boundaries to runtime diagnostics.
+- Physical ARM64 Raspberry Pi verification on 2026-09-09: wake, native
+  transport (`connect state = 3`), authentication (`login result = 0`), real
+  H.264 SPS/PPS/IDR, Home Assistant camera-card video, and production RTSP all
+  succeeded with the current camera credential.
+- The 16-character native camera credential changes after a reboot or power
+  cycle. A stale value can connect transport but is rejected at login and
+  produces no H.264; both the historical legacy and current authenticated
+  helper paths succeeded with the newly captured current value, so helper
+  migration is not the root cause.
+- Next investigation: capture fresh official iPhone-to-camera LAN traffic after
+  reboot/power-cycle to establish how the current credential is obtained before
+  implementing any retrieval mechanism.
 
 ## 1.2.16
 

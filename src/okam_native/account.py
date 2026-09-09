@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import urllib.error
 import urllib.parse
@@ -44,6 +45,8 @@ class CameraSelection:
     alias: str | None = None
     password: str | None = field(default=None, repr=False)
     auth_mode: str = "automatic"
+    battery_camera: bool = True
+    camera_ip: str | None = None
 
     @property
     def auth_method(self) -> str:
@@ -99,14 +102,14 @@ def select_account_devices(
 
 def normalize_camera_configurations(
     value: object,
-) -> list[tuple[str, str | None, str | None, str]] | None:
+) -> list[tuple[str, str | None, str | None, str, bool, str | None]] | None:
     """Parse the Supervisor-supported ``cameras`` list of small mappings."""
 
     if value is None:
         return None
     if not isinstance(value, list):
         raise AccountError("cameras must be a list")
-    result: list[tuple[str, str | None, str | None, str]] = []
+    result: list[tuple[str, str | None, str | None, str, bool, str | None]] = []
     seen_uids: set[str] = set()
     seen_aliases: set[str] = set()
     for item in value:
@@ -146,9 +149,26 @@ def normalize_camera_configurations(
             # A supplied password is intentionally ignored in automatic mode
             # rather than silently changing its authentication semantics.
             password = None
-        result.append((uid, alias, password, auth_mode))
-    uid_keys = {uid.casefold() for uid, _alias, _password, _mode in result}
-    for uid, alias, _password, _mode in result:
+        battery_camera = item.get("battery_camera", True)
+        if not isinstance(battery_camera, bool):
+            raise AccountError("battery_camera must be a boolean")
+        camera_ip = item.get("ip")
+        if camera_ip is not None:
+            if not isinstance(camera_ip, str):
+                raise AccountError("camera IP is invalid")
+            camera_ip = camera_ip.strip()
+            if not camera_ip:
+                raise AccountError("camera IP must be a valid IPv4 address")
+            try:
+                parsed_ip = ipaddress.ip_address(camera_ip)
+            except ValueError:
+                raise AccountError("camera IP must be a valid IPv4 address") from None
+            if parsed_ip.version != 4:
+                raise AccountError("camera IP must be a valid IPv4 address")
+            camera_ip = str(parsed_ip)
+        result.append((uid, alias, password, auth_mode, battery_camera, camera_ip))
+    uid_keys = {uid.casefold() for uid, _alias, _password, _mode, _battery, _ip in result}
+    for uid, alias, _password, _mode, _battery, _ip in result:
         if alias is not None and alias.casefold() in uid_keys and alias.casefold() != uid.casefold():
             raise AccountError("camera alias collides with another camera UID")
     return result
@@ -174,7 +194,7 @@ def configured_camera_selections(
             legacy_alias = options.get("camera_id")
             alias = legacy_alias.strip() if isinstance(legacy_alias, str) else None
             current = [
-                (uid, alias if len(legacy_uids) == 1 else None, None, "automatic")
+                (uid, alias if len(legacy_uids) == 1 else None, None, "automatic", True, None)
                 for uid in legacy_uids
             ]
     if not current:
@@ -187,11 +207,11 @@ def configured_camera_selections(
             raise AccountError("official account returned duplicate camera UIDs")
         by_uid[key] = device
     selected: list[CameraSelection] = []
-    for uid, alias, camera_password, auth_mode in current:
+    for uid, alias, camera_password, auth_mode, battery_camera, camera_ip in current:
         device = by_uid.get(uid.casefold())
         if device is None:
             raise AccountError("one or more configured camera UIDs were not found in the account")
-        selected.append(CameraSelection(device, alias, camera_password, auth_mode))
+        selected.append(CameraSelection(device, alias, camera_password, auth_mode, battery_camera, camera_ip))
     return selected
 
 

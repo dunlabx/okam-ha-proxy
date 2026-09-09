@@ -21,6 +21,7 @@ from okam_native.account import (
     Eye4AccountClient,
     configured_camera_selections,
 )
+from okam_native.arp_listener import start_arp_wake_listener
 from okam_native.auth import (
     AuthenticationRejected,
     AuthenticationTransportError,
@@ -237,11 +238,7 @@ def enumerate_account() -> list[CameraSelection] | None:
         return None
     set_status(phase="enumerating_account", configuration_required=False)
     debug_credentials = options.get("debug_credentials") is True
-    client = (
-        Eye4AccountClient(debug_credentials=True)
-        if debug_credentials
-        else Eye4AccountClient()
-    )
+    client = Eye4AccountClient(debug_credentials=True) if debug_credentials else Eye4AccountClient()
     try:
         devices = client.enumerate(username, password)
     finally:
@@ -573,28 +570,28 @@ def configure_bridge(
     def start_stream() -> subprocess.Popen[bytes]:
         started = time.monotonic()
         session_diag("native_start_begin", reason="active_consumer")
-        session_diag("wake_begin")
-        set_status(phase="waking_camera_on_demand")
-        try:
-            wake = asyncio.run(wake_camera(device.uid, credentials, timeout=12.0))
-            session_diag(
-                "wake_result",
-                requested=wake.requested,
-                responsive_servers=wake.responsive_servers,
-                wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1),
-            )
-            set_status(
-                wake_requested=wake.requested,
-                wake_responsive_servers=wake.responsive_servers,
-                phase="starting_native_stream",
-            )
-        except WakeError as error:
-            session_diag(
-                "wake_result",
-                result="failed",
-                exception_class=type(error).__name__,
-                wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1),
-            )
+        runtime_session = session_ref[0]
+        wake_before_connect = runtime_session is None or runtime_session._wake_before_connect
+        if wake_before_connect:
+            session_diag("wake_begin")
+            set_status(phase="waking_camera_on_demand")
+            try:
+                wake = asyncio.run(wake_camera(device.uid, credentials, timeout=12.0))
+                session_diag(
+                    "wake_result", requested=wake.requested,
+                    responsive_servers=wake.responsive_servers,
+                    wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1),
+                )
+                set_status(wake_requested=wake.requested,
+                           wake_responsive_servers=wake.responsive_servers,
+                           phase="starting_native_stream")
+            except WakeError as error:
+                session_diag("wake_result", result="failed",
+                             exception_class=type(error).__name__,
+                             wake_elapsed_ms=round((time.monotonic() - started) * 1000, 1))
+                set_status(phase="starting_native_stream")
+        else:
+            session_diag("wake_skipped", reason="camera_already_awake")
             set_status(phase="starting_native_stream")
         auth_started = time.monotonic()
         session_diag("auth_begin")
@@ -694,6 +691,8 @@ def configure_bridge(
         api_token=api_token,
         session=session,
         ffmpeg=str(FFMPEG),
+        battery_camera=getattr(selection, "battery_camera", True),
+        camera_ip=getattr(selection, "camera_ip", None),
     )
     BRIDGES.add(bridge)
     set_status(
@@ -733,10 +732,32 @@ def initialize_camera_runtimes(
     return registered
 
 
+def configured_arp_routes(bridges: tuple[CameraBridge, ...]) -> dict[str, str]:
+    """Build unambiguous battery-camera IPv4 routing for the ARP listener."""
+
+    routes: dict[str, str] = {}
+    duplicates: set[str] = set()
+    for bridge in bridges:
+        if not bridge.battery_camera:
+            continue
+        if bridge.camera_ip is None:
+            print(f"arp_wake_camera_ip_missing uid={bridge.camera_uid}", flush=True)
+            continue
+        if bridge.camera_ip in routes:
+            duplicates.add(bridge.camera_ip)
+            print(f"arp_wake_duplicate_camera_ip ip={bridge.camera_ip}", flush=True)
+            continue
+        routes[bridge.camera_ip] = bridge.camera_uid
+    for camera_ip in duplicates:
+        routes.pop(camera_ip, None)
+    return routes
+
+
 def main() -> int:
     options = load_options()
     log_process_boundary("start")
     log_build_fingerprint()
+    arp_listener = None
     debug_credentials = options.get("debug_credentials") is True
     print(f"credential_debug_enabled={str(debug_credentials).lower()}", flush=True)
     if debug_credentials:
@@ -773,6 +794,27 @@ def main() -> int:
             initialize_camera_runtimes(selections, ACCOUNT_DEVICES)
             if not BRIDGES.values():
                 raise RuntimeError("no selected camera runtime is available")
+            ip_to_uid = configured_arp_routes(BRIDGES.values())
+
+            def on_arp_wake(camera_uid: str, _packet: object) -> None:
+                bridge = BRIDGES.get(camera_uid)
+                if bridge is None:
+                    return
+                try:
+                    subscription = bridge.session.acquire(
+                        passive=False, reason="arp_wake", wake_before_connect=False
+                    )
+                except Exception as error:
+                    print(f"arp_wake_stream_failed uid={camera_uid} error={type(error).__name__}", flush=True)
+                    return
+                subscription.close()
+
+            arp_listener = start_arp_wake_listener(
+                logger=print,
+                enabled=options.get("arp_wake_listener", True) is True,
+                ip_to_camera_uid=ip_to_uid,
+                on_wake=on_arp_wake,
+            )
             print("startup_ready=true", flush=True)
     except Exception as error:
         phase = "startup_error" if STATUS["loader_ready"] else "native_loader_error"
@@ -785,6 +827,8 @@ def main() -> int:
         suffix = f" detail={detail}" if detail else ""
         print(f"startup_ready=false error={type(error).__name__}{suffix}", flush=True)
     stop.wait()
+    if arp_listener is not None:
+        arp_listener.close()
     BRIDGES.close()
     log_process_boundary("stop")
     rtsp_server.shutdown()

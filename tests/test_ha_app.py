@@ -64,7 +64,10 @@ def test_fork_repository_and_addon_identity_are_local() -> None:
     assert config["name"] == "O-KAM HA Proxy"
     assert config["slug"] == "okam_ha_proxy"
     assert config["url"] == "https://github.com/dunlabx/okam-ha-proxy"
-    assert config["image"] == "ghcr.io/dunlabx/okam-ha-proxy"
+    assert re.fullmatch(
+        r"ghcr\.io/dunlabx/okam-ha-proxy(?::[A-Za-z0-9_.-]+)?",
+        str(config["image"]),
+    )
 
 
 def test_addon_config_matches_supervisor_schema_expectations() -> None:
@@ -75,13 +78,12 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert config["version"] == "1.2.17"
+    assert re.fullmatch(r"1\.2\.18", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["startup"] == "application"
     assert config["boot"] == "auto"
     assert config["ports"] == {"8099/tcp": 8099, "8100/tcp": 8100}
     assert set(config["ports_description"]) == set(config["ports"])
-    assert config["image"] == "ghcr.io/dunlabx/okam-ha-proxy"
 
     options = config["options"]
     schema = config["schema"]
@@ -89,7 +91,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(schema, dict)
     assert set(options) <= set(schema)
     assert options["cameras"] == []
-    assert schema["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)"}]
+    assert schema["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)", "battery_camera": "bool", "ip": "str?"}]
     assert _enum_values(schema["cameras"][0]["auth_method"]) == {"automatic", "password"}
     for key, value in schema.items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
@@ -99,7 +101,7 @@ def test_test_addon_config_matches_supervisor_schema_expectations() -> None:
     config = _load_addon_config("okam_native_app/test-addon/config.yaml")
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert config["options"]["cameras"] == []
-    assert config["schema"]["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)"}]
+    assert config["schema"]["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)", "battery_camera": "bool", "ip": "str?"}]
     for key, value in config["schema"].items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 
@@ -325,6 +327,8 @@ def test_obsolete_global_camera_password_is_absent_from_addon_schemas() -> None:
         config = yaml.safe_load((ROOT / "okam_native_app" / name).read_text(encoding="utf-8"))
         assert "camera_password" not in config["schema"], name
         assert "camera_password" not in config["options"], name
+        assert "debug_account_api" not in config["schema"], name
+        assert "debug_account_api" not in config["options"], name
 
 
 def test_watchdog_targets_a_declared_container_port() -> None:

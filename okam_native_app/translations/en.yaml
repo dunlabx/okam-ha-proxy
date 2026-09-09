@@ -10,7 +10,7 @@ configuration:
     description: A random secret of at least 16 characters that you create and also enter in the Home Assistant integration.
   cameras:
     name: Cameras
-    description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias and an optional password. Leave password empty for automatic authentication.
+    description: Optional list of camera mappings. Leave empty to expose every account camera; each mapping requires a UID and may include an alias and an optional password.
     fields:
       uid:
         name: Camera UID
@@ -23,6 +23,12 @@ configuration:
           password: Password
       password:
         name: Camera password
+      battery_camera:
+        name: Battery camera (sleep mode)
+        description: Enable for battery-powered cameras that normally sleep. RTSP stays available in standby mode and switches to live video when the camera wakes.
+      ip:
+        name: Camera IP address
+        description: Local IPv4 address used to detect wake events for battery cameras. Not required for normal cameras.
   api_port:
     name: API port
     description: Local HTTP API port. The default is 8099.
@@ -44,6 +50,12 @@ configuration:
   run_snapshot_test:
     name: Run complete snapshot diagnostic
     description: Wake, connect, authenticate, receive H.264, create one JPEG, and disconnect when the app starts. Leave disabled for normal use.
+  arp_wake_listener:
+    name: ARP wake-up listener
+    description: Detect when configured battery cameras wake on the local network and automatically switch their RTSP stream from standby to live video.
+  debug_credentials:
+    name: Debug credentials
+    description: Temporary credential diagnostics for troubleshooting. Leave disabled normally.
 network:
   8099/tcp: Local bridge API used by the Home Assistant integration
   8100/tcp: RTSP camera streaming for Frigate, go2rtc, VLC, and ffmpeg

@@ -108,6 +108,7 @@ class NativeStreamSession:
         self._standby_interval = max(0.1, standby_interval)
         self._standby_thread: threading.Thread | None = None
         self._closed = False
+        self._wake_before_connect = True
         self._helper_stdout_bytes = 0
         self._helper_stdout_chunks = 0
         self._h264_frame_count = 0
@@ -122,7 +123,13 @@ class NativeStreamSession:
         else:
             self._standby_media = (b"", b"", b"")
 
-    def acquire(self, *, passive: bool = False, reason: str = "active") -> StreamSubscription:
+    def acquire(
+        self,
+        *,
+        passive: bool = False,
+        reason: str = "active",
+        wake_before_connect: bool = True,
+    ) -> StreamSubscription:
         wait_begin = time.monotonic()
         self._diagnostic("session_lock_wait_begin", reason=reason, passive=passive)
         while True:
@@ -148,6 +155,7 @@ class NativeStreamSession:
                         self._idle_timer.cancel()
                         self._idle_timer = None
                     if not passive and process is None:
+                        self._wake_before_connect = wake_before_connect
                         start_begin = time.monotonic()
                         self._diagnostic("session_start_begin", reason=reason)
                         self._start_locked(reason)

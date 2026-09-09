@@ -16,8 +16,9 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | `account_username` | Email address of the O-KAM account |
 | `account_password` | Password of the O-KAM account |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
-| `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`, and optional `auth_method`; empty means all account cameras |
+| `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`/`auth_method`, `battery_camera` (defaults to `true` for old configurations), and optional IPv4 `ip`; empty means all account cameras |
 | `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
+| `arp_wake_listener` | Receive-only ARP wake-up listener for configured battery cameras |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
