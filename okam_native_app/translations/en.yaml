@@ -49,6 +49,20 @@ configuration:
       auto_recvonly: Automatic receive-only
       explicit_recvonly: Explicit receive-only
       compat_control: Compatibility control URI
+  hacs_audio_mode:
+    name: HACS audio mode
+    description: Select AAC audio for Home Assistant live view or disable audio for video-only compatibility.
+    options:
+      aac: AAC audio (recommended)
+      video_only: Video only
+  rtsp_backchannel_mode:
+    name: RTSP talkback backchannel mode
+    description: Select how the separate ONVIF audio backchannel is advertised to go2rtc or Frigate.
+    options:
+      off: Disabled
+      onvif_require_audioback: Require ONVIF, audioback control
+      onvif_require_trackid2: Require ONVIF, trackID 2 control
+      always_audioback: Always advertise audioback
   run_connect_test:
     name: Run connection diagnostic
     description: Perform a bounded P2P connection test when the app starts. Leave disabled for normal use.

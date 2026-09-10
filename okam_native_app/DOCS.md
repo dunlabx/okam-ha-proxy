@@ -19,6 +19,8 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`/`auth_method`, `battery_camera` (defaults to `true` for old configurations), and optional IPv4 `ip`; empty means all account cameras |
 | `arp_wake_listener` | Receive-only ARP wake-up listener for configured battery cameras |
 | `rtsp_audio_compatibility_mode` | Receive-audio SDP mode: `auto_recvonly` (default), `explicit_recvonly`, `compat_control`, or `baseline` |
+| `hacs_audio_mode` | HACS `/stream.ts` output: `aac` (default, H.264 copy plus AAC audio) or `video_only` |
+| `rtsp_backchannel_mode` | Separate ONVIF talkback SDP: `off` (default), `onvif_require_audioback`, `onvif_require_trackid2`, or `always_audioback` |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |

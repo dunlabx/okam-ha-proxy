@@ -35,6 +35,13 @@ RTSP_AUDIO_COMPATIBILITY_MODES = (
     "compat_control",
 )
 DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE = "auto_recvonly"
+RTSP_BACKCHANNEL_MODES = (
+    "off",
+    "onvif_require_audioback",
+    "onvif_require_trackid2",
+    "always_audioback",
+)
+DEFAULT_RTSP_BACKCHANNEL_MODE = "off"
 
 
 def _audio_compatibility_mode(value: object) -> str:
@@ -42,6 +49,11 @@ def _audio_compatibility_mode(value: object) -> str:
 
     mode = value if isinstance(value, str) else DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
     return mode if mode in RTSP_AUDIO_COMPATIBILITY_MODES else DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
+
+
+def _backchannel_mode(value: object) -> str:
+    mode = value if isinstance(value, str) else DEFAULT_RTSP_BACKCHANNEL_MODE
+    return mode if mode in RTSP_BACKCHANNEL_MODES else DEFAULT_RTSP_BACKCHANNEL_MODE
 
 
 class _BitReader:
@@ -261,6 +273,8 @@ def _sdp(
     host: str,
     port: int,
     audio_compatibility_mode: str = DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE,
+    backchannel_mode: str = DEFAULT_RTSP_BACKCHANNEL_MODE,
+    require_backchannel: bool = False,
 ) -> bytes:
     mode = _audio_compatibility_mode(audio_compatibility_mode)
     camera_uid = str(getattr(bridge, "camera_uid", "") or getattr(bridge, "camera_id", ""))
@@ -291,6 +305,19 @@ def _sdp(
         attrs.append("a=sendrecv")
     elif mode == "explicit_recvonly":
         attrs.append("a=recvonly")
+    back_mode = _backchannel_mode(backchannel_mode)
+    advertise_backchannel = back_mode == "always_audioback" or (
+        require_backchannel and back_mode in {"onvif_require_audioback", "onvif_require_trackid2"}
+    )
+    if advertise_backchannel:
+        control = "audioback" if back_mode != "onvif_require_trackid2" else "trackID=2"
+        attrs.extend([
+            "m=audio 0 RTP/AVP 98",
+            "c=IN IP4 0.0.0.0",
+            "a=rtpmap:98 PCMA/16000/1",
+            "a=sendonly",
+            f"a=control:{control}",
+        ])
     if len(sps) >= 4 and len(pps) >= 4:
         sps_payload = sps[4:] if sps[:4] == b"\x00\x00\x00\x01" else sps[3:]
         pps_payload = pps[4:] if pps[:4] == b"\x00\x00\x00\x01" else pps[3:]
@@ -328,6 +355,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._media_generation: int | None = None
         self._codec_transition_seen = False
         self._sdp_mode_logged = False
+        self._backchannel_packets = 0
+        self._backchannel_bytes = 0
 
     def _diagnostic(self, event: str, **fields: object) -> None:
         bridge = self._diagnostic_camera
@@ -412,11 +441,15 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             return True
         if method == "DESCRIBE":
             mode = self.server.audio_compatibility_mode
+            backchannel_mode = getattr(self.server, "backchannel_mode", DEFAULT_RTSP_BACKCHANNEL_MODE)
+            require_backchannel = "www.onvif.org/ver20/backchannel" in headers.get("require", "").casefold()
             body = _sdp(
                 bridge,
                 parsed.hostname or self.server.host,
                 parsed.port or self.server.port,
                 mode,
+                backchannel_mode,
+                require_backchannel,
             )
             if not self._sdp_mode_logged:
                 direction = {
@@ -433,6 +466,13 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                     control=control,
                 )
                 self._sdp_mode_logged = True
+            advertised = b"a=sendonly" in body and b"a=rtpmap:98 PCMA/16000/1" in body
+            self._diagnostic(
+                "rtsp_backchannel_mode",
+                mode=_backchannel_mode(backchannel_mode),
+                advertised=str(advertised).lower(),
+                require_present=str(require_backchannel).lower(),
+            )
             self._reply(200, cseq, {"Content-Type": "application/sdp", "Content-Base": target}, body)
             return True
         if method == "SETUP":
@@ -447,7 +487,12 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                 if channel > 255 or int(match.group(2)) > 255:
                     self._reply(461, cseq)
                     return True
-                track = 1 if re.search(r"trackID=1|audioback", target, re.I) else 0
+                if re.search(r"audioback", target, re.I) or re.search(r"trackID=2", target, re.I):
+                    track = 2
+                elif re.search(r"trackID=1", target, re.I):
+                    track = 1
+                else:
+                    track = 0
                 self._track_channels[track] = channel
                 if track == 0:
                     self._rtp_channel = channel
@@ -460,6 +505,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                     "Session": self._session_id,
                 },
             )
+            if track == 2:
+                self._diagnostic("rtsp_backchannel_setup", control=target, channel=channel)
             return True
         if method == "PLAY":
             if self._bridge is not bridge or self._subscription is not None:
@@ -495,7 +542,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
 
     def _handle_interleaved(self, channel: int, packet: bytes) -> None:
         """Forward go2rtc backchannel RTP payloads to native channel 3."""
-        if channel != self._track_channels.get(1) or len(packet) < 12:
+        if channel != self._track_channels.get(2) or len(packet) < 12:
             return
         header = 12 + (packet[0] & 0x0F) * 4
         if packet[0] & 0x10:
@@ -507,7 +554,14 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         sender = getattr(getattr(self, "_bridge", None), "session", None)
         send = getattr(sender, "send_talkback", None)
         if callable(send):
-            send(packet[header:])
+            payload = packet[header:]
+            if send(payload):
+                self._backchannel_packets += 1
+                self._backchannel_bytes += len(payload)
+                if self._backchannel_packets == 1:
+                    self._diagnostic("rtsp_backchannel_first_rtp", bytes=len(payload))
+                elif self._backchannel_packets % 250 == 0:
+                    self._diagnostic("rtsp_backchannel_progress", packets=self._backchannel_packets, bytes=self._backchannel_bytes)
 
     def _reply(self, status: int, cseq: str, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
         reason = {
@@ -703,8 +757,10 @@ class RTSPServer(_ThreadingTCPServer):
         server_address: tuple[str, int],
         registry: BridgeRegistry,
         audio_compatibility_mode: str = DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE,
+        backchannel_mode: str = DEFAULT_RTSP_BACKCHANNEL_MODE,
     ) -> None:
         self.registry = registry
         self.audio_compatibility_mode = _audio_compatibility_mode(audio_compatibility_mode)
+        self.backchannel_mode = _backchannel_mode(backchannel_mode)
         super().__init__(server_address, _RTSPHandler)
         self.host, self.port = self.server_address

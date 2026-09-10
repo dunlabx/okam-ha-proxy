@@ -1,5 +1,7 @@
 import http.client
+import io
 import json
+import os
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -424,6 +426,78 @@ def test_dropped_clients_do_not_report_a_crash(capsys) -> None:
     assert "method=UNKNOWN path=- camera_uid=- operation=server.handle_error" in captured
     assert "172.30.32.2" not in captured
     assert "traceback=" in captured
+
+
+def test_hacs_muxer_maps_pcma_to_aac_without_changing_h264(monkeypatch):
+    class Subscription:
+        def __iter__(self):
+            yield b"\x00\x00\x01\x65video"
+        def iter_audio(self):
+            yield b"a" * 640
+        def close(self):
+            pass
+
+    class Session:
+        def __init__(self):
+            self.subscription = Subscription()
+            self.events = []
+        def acquire(self, **_kwargs):
+            return self.subscription
+        def diagnostic(self, event, **fields):
+            self.events.append((event, fields))
+
+    class Pipe:
+        def __init__(self):
+            self.data = bytearray()
+        def write(self, payload):
+            self.data.extend(payload)
+        def flush(self):
+            pass
+        def close(self):
+            pass
+
+    class Process:
+        def __init__(self, command, **kwargs):
+            self.command = command
+            self.kwargs = kwargs
+            self.stdin = Pipe()
+            self.stdout = io.BytesIO(b"mpegts")
+            self.returncode = 0
+            self.pid = 123
+        def poll(self):
+            return 0
+        def terminate(self):
+            pass
+        def wait(self, timeout=None):
+            return 0
+
+    created = []
+    def fake_popen(command, **kwargs):
+        process = Process(command, **kwargs)
+        created.append(process)
+        return process
+    monkeypatch.setattr("okam_native.bridge.subprocess.Popen", fake_popen)
+
+    session = Session()
+    bridge = CameraBridge(
+        camera_id="camera", camera_name="Camera", api_token="token",
+        session=session, ffmpeg="ffmpeg", hacs_audio_mode="aac",
+    )
+    handler_type = make_handler(lambda: {}, lambda: bridge)
+    handler = object.__new__(handler_type)
+    handler.wfile = Pipe()
+    handler.connection = type("Connection", (), {"settimeout": lambda self, value: None})()
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: None
+    handler._json = lambda *_args, **_kwargs: None
+    handler._muxed_stream(bridge)
+    assert created
+    command = created[0].command
+    assert "-f" in command and "alaw" in command
+    assert "-c:a" in command and command[command.index("-c:a") + 1] == "aac"
+    assert command[command.index("-c:v") + 1] == "copy"
+    assert any(event == "hacs_audio_mode" for event, _fields in session.events)
 
 
 def test_unexpected_request_exception_logs_safe_production_context(capsys) -> None:

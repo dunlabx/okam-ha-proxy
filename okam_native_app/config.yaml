@@ -1,5 +1,5 @@
 name: O-KAM HA Proxy
-version: 2.0.0-rc5
+version: 2.0.0-rc6
 slug: okam_ha_proxy
 description: Self-contained native O-KAM camera bridge for Home Assistant
 url: https://github.com/dunlabx/okam-ha-proxy
@@ -31,6 +31,8 @@ options:
   idle_timeout_seconds: 120
   arp_wake_listener: true
   rtsp_audio_compatibility_mode: auto_recvonly
+  hacs_audio_mode: aac
+  rtsp_backchannel_mode: "off"
   run_connect_test: false
   run_auth_test: false
   run_stream_test: false
@@ -52,6 +54,8 @@ schema:
   idle_timeout_seconds: "int(10,600)"
   arp_wake_listener: bool
   rtsp_audio_compatibility_mode: "list(baseline|auto_recvonly|explicit_recvonly|compat_control)"
+  hacs_audio_mode: "list(video_only|aac)"
+  rtsp_backchannel_mode: "list(off|onvif_require_audioback|onvif_require_trackid2|always_audioback)"
   run_connect_test: bool
   run_auth_test: bool
   run_stream_test: bool

@@ -152,6 +152,8 @@ class NativeStreamSession:
         self._audio_frame_count = 0
         self._audio_bytes_total = 0
         self._audio_drop_count = 0
+        self._talkback_frame_count = 0
+        self._talkback_bytes_total = 0
         self._diagnostic_events: set[str] = set()
         self._deferred_activation: Callable[[], None] | None = None
         if self._standby_frame:
@@ -556,6 +558,17 @@ class NativeStreamSession:
             with self._talkback_lock:
                 writer.write(encode_talkback_frame(payload))
                 writer.flush()
+            with self._lock:
+                self._talkback_frame_count += 1
+                self._talkback_bytes_total += len(payload)
+                if self._talkback_frame_count == 1:
+                    self._diagnostic("native_talkback_first_frame", frame_bytes=len(payload))
+                elif self._talkback_frame_count % 250 == 0:
+                    self._diagnostic(
+                        "native_talkback_progress",
+                        frame_count=self._talkback_frame_count,
+                        bytes_total=self._talkback_bytes_total,
+                    )
             return True
         except (OSError, BrokenPipeError):
             return False
@@ -615,6 +628,8 @@ class NativeStreamSession:
         self._audio_frame_count = 0
         self._audio_bytes_total = 0
         self._audio_drop_count = 0
+        self._talkback_frame_count = 0
+        self._talkback_bytes_total = 0
         self._diagnostic_events.clear()
         self._set_state_locked("AUTHENTICATING")
         self._emit(

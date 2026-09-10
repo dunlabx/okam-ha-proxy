@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -99,6 +100,7 @@ class CameraBridge:
         ffmpeg: str,
         battery_camera: bool = True,
         camera_ip: str | None = None,
+        hacs_audio_mode: str = "aac",
     ) -> None:
         self.camera_id = camera_id
         self.camera_uid = camera_uid or camera_id
@@ -109,6 +111,7 @@ class CameraBridge:
         self.ffmpeg = ffmpeg
         self.battery_camera = battery_camera
         self.camera_ip = camera_ip
+        self.hacs_audio_mode = hacs_audio_mode if hacs_audio_mode in {"aac", "video_only"} else "aac"
 
     def authenticated(self, authorization: str | None) -> bool:
         expected = f"Bearer {self._api_token}"
@@ -522,31 +525,61 @@ def make_handler(
             )
             muxer: subprocess.Popen[bytes] | None = None
             writer: threading.Thread | None = None
+            audio_writer: threading.Thread | None = None
+            audio_read_fd: int | None = None
+            audio_write_fd: int | None = None
+            audio_enabled = bridge.hacs_audio_mode == "aac"
+            _session_diagnostic(bridge, "hacs_audio_mode", mode=bridge.hacs_audio_mode)
+            if audio_enabled:
+                audio_read_fd, audio_write_fd = os.pipe()
             try:
+                command = [
+                    bridge.ffmpeg,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-fflags", "+genpts",
+                    "-use_wallclock_as_timestamps", "1",
+                    "-f", "h264",
+                    "-i", "pipe:0",
+                ]
+                pass_fds: tuple[int, ...] = ()
+                if audio_enabled and audio_read_fd is not None:
+                    command.extend([
+                        "-f", "alaw",
+                        "-ar", "16000",
+                        "-ac", "1",
+                        "-i", f"pipe:{audio_read_fd}",
+                        "-map", "0:v:0",
+                        "-map", "1:a:0",
+                        "-c:a", "aac",
+                    ])
+                    pass_fds = (audio_read_fd,)
+                command.extend([
+                    "-c:v", "copy",
+                    "-f", "mpegts",
+                    "-muxdelay", "0",
+                    "-muxpreload", "0",
+                    "pipe:1",
+                ])
                 muxer = subprocess.Popen(
-                    [
-                        bridge.ffmpeg,
-                        "-hide_banner",
-                        "-loglevel", "error",
-                        "-fflags", "+genpts",
-                        "-use_wallclock_as_timestamps", "1",
-                        "-f", "h264",
-                        "-i", "pipe:0",
-                        "-c:v", "copy",
-                        "-f", "mpegts",
-                        "-muxdelay", "0",
-                        "-muxpreload", "0",
-                        "pipe:1",
-                    ],
+                    command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
+                    pass_fds=pass_fds,
                 )
             except (OSError, subprocess.SubprocessError):
+                if audio_read_fd is not None:
+                    os.close(audio_read_fd)
+                if audio_write_fd is not None:
+                    os.close(audio_write_fd)
                 subscription.close()
                 self._json(503, {"error": "stream_unavailable"})
                 return
+            if audio_read_fd is not None:
+                os.close(audio_read_fd)
+                audio_read_fd = None
             assert muxer.stdin is not None and muxer.stdout is not None
             _session_diagnostic(bridge, "muxer_started")
 
@@ -567,6 +600,35 @@ def make_handler(
                     except OSError:
                         pass
 
+            def feed_audio() -> None:
+                assert audio_write_fd is not None
+                first_frame = True
+                frame_count = 0
+                try:
+                    iterator = getattr(subscription, "iter_audio", None)
+                    if not callable(iterator):
+                        return
+                    for payload in iterator():
+                        if first_frame:
+                            first_frame = False
+                            _session_diagnostic(bridge, "hacs_audio_first_frame", bytes=len(payload))
+                            _session_diagnostic(bridge, "hacs_audio_transcode_started")
+                        view = memoryview(payload)
+                        while view:
+                            written = os.write(audio_write_fd, view)
+                            view = view[written:]
+                        frame_count += 1
+                        if frame_count % 250 == 0:
+                            _session_diagnostic(bridge, "hacs_audio_progress", frame_count=frame_count)
+                except (BrokenPipeError, ConnectionError, OSError, ValueError):
+                    _session_diagnostic(bridge, "hacs_audio_pipe_error")
+                finally:
+                    try:
+                        os.close(audio_write_fd)
+                    except OSError:
+                        pass
+                    _session_diagnostic(bridge, "hacs_audio_transcode_stopped")
+
             self.send_response(200)
             self.send_header("Content-Type", "video/mp2t")
             self.send_header("Cache-Control", "no-store")
@@ -582,6 +644,9 @@ def make_handler(
             try:
                 writer = threading.Thread(target=feed, daemon=True)
                 writer.start()
+                if audio_enabled:
+                    audio_writer = threading.Thread(target=feed_audio, daemon=True)
+                    audio_writer.start()
                 output_bytes = 0
                 first_output = True
                 while True:
@@ -616,6 +681,13 @@ def make_handler(
                             )
                 if writer is not None:
                     writer.join(timeout=2)
+                if audio_writer is not None:
+                    audio_writer.join(timeout=2)
+                elif audio_write_fd is not None:
+                    try:
+                        os.close(audio_write_fd)
+                    except OSError:
+                        pass
                 _session_diagnostic(
                     bridge,
                     "muxer_exit",

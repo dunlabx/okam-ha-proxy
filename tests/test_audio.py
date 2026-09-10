@@ -12,6 +12,7 @@ from okam_native.rtsp import (
     AUDIO_CLOCK,
     RTP_AUDIO_PAYLOAD_TYPE,
     RTSP_AUDIO_COMPATIBILITY_MODES,
+    RTSP_BACKCHANNEL_MODES,
     _RTSPHandler,
     _sdp,
 )
@@ -38,6 +39,47 @@ def test_sdp_advertises_dynamic_pcma_audio_track():
     assert b"m=audio 0 RTP/AVP 97" in body
     assert b"a=rtpmap:97 PCMA/16000/1" in body
     assert b"a=control:trackID=1" in body
+
+
+def test_backchannel_sdp_is_separate_sendonly_track_and_require_gated():
+    class Session:
+        def parameter_sets(self):
+            return b"", b""
+    class Bridge:
+        session = Session()
+
+    for mode in RTSP_BACKCHANNEL_MODES:
+        body = _sdp(Bridge(), "127.0.0.1", 8100, "auto_recvonly", mode, True)
+        advertised = b"a=rtpmap:98 PCMA/16000/1" in body
+        assert advertised is (mode != "off")
+        if advertised:
+            assert b"a=sendonly" in body
+            assert b"a=control:audioback" in body or b"a=control:trackID=2" in body
+
+    gated = _sdp(Bridge(), "127.0.0.1", 8100, "auto_recvonly", "onvif_require_audioback", False)
+    assert b"a=rtpmap:98" not in gated
+
+
+def test_backchannel_rtp_routes_only_negotiated_track_to_talkback():
+    class Session:
+        def __init__(self):
+            self.payloads = []
+        def send_talkback(self, payload):
+            self.payloads.append(payload)
+            return True
+    class Bridge:
+        session = Session()
+    handler = object.__new__(_RTSPHandler)
+    handler._track_channels = {1: 2, 2: 4}
+    handler._bridge = Bridge()
+    handler._backchannel_packets = 0
+    handler._backchannel_bytes = 0
+    handler._diagnostic = lambda *_args, **_kwargs: None
+    payload = b"audio"
+    rtp = b"\x80\x60" + b"\x00" * 10 + payload
+    handler._handle_interleaved(2, rtp)
+    handler._handle_interleaved(4, rtp)
+    assert handler._bridge.session.payloads == [payload]
 
 
 @pytest.mark.parametrize("mode", RTSP_AUDIO_COMPATIBILITY_MODES)

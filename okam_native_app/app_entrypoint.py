@@ -51,7 +51,11 @@ from okam_native.p2p import (
 )
 from okam_native.session import NativeStreamSession
 from okam_native.wakeup import WakeError, load_wake_credentials, wake_camera
-from okam_native.rtsp import DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE, RTSPServer
+from okam_native.rtsp import (
+    DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE,
+    DEFAULT_RTSP_BACKCHANNEL_MODE,
+    RTSPServer,
+)
 from okam_native.logging import PROCESS_ID, timestamped_print
 
 
@@ -804,6 +808,7 @@ def configure_bridge(
         ffmpeg=str(FFMPEG),
         battery_camera=getattr(selection, "battery_camera", True),
         camera_ip=getattr(selection, "camera_ip", None),
+        hacs_audio_mode=str(options.get("hacs_audio_mode", "aac")),
     )
     BRIDGES.add(bridge)
     set_status(
@@ -933,11 +938,17 @@ def main() -> int:
     rtsp_audio_mode = options.get(
         "rtsp_audio_compatibility_mode", DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
     )
-    rtsp_server = RTSPServer(("0.0.0.0", rtsp_port), BRIDGES, rtsp_audio_mode)
+    rtsp_backchannel_mode = options.get(
+        "rtsp_backchannel_mode", DEFAULT_RTSP_BACKCHANNEL_MODE
+    )
+    rtsp_server = RTSPServer(
+        ("0.0.0.0", rtsp_port), BRIDGES, rtsp_audio_mode, rtsp_backchannel_mode
+    )
     print(
         f"rtsp_audio_compatibility_mode mode={rtsp_server.audio_compatibility_mode}",
         flush=True,
     )
+    print(f"rtsp_backchannel_mode mode={rtsp_server.backchannel_mode}", flush=True)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Thread(target=rtsp_server.serve_forever, daemon=True).start()
     stop = threading.Event()
