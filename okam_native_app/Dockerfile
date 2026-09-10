@@ -80,7 +80,7 @@ RUN curl -fsSL "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VER
       --enable-ffmpeg \
       --enable-protocol=pipe \
       --enable-demuxer=h264 \
-      --enable-demuxer=alaw \
+      --enable-demuxer=pcm_alaw \
       --enable-parser=h264 \
       --enable-decoder=h264 \
       --enable-decoder=pcm_alaw \
@@ -89,6 +89,7 @@ RUN curl -fsSL "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${FFMPEG_VER
       --enable-muxer=image2pipe \
       --enable-muxer=mpegts \
       --enable-filter=scale \
+      --enable-filter=aresample \
       --extra-cflags=-Os \
       --extra-ldflags=-s
 RUN cd "/tmp/FFmpeg-n${FFMPEG_VERSION}" \

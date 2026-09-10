@@ -7,7 +7,14 @@ import time
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlsplit
 
-from okam_native.bridge import BridgeRegistry, CameraBridge, QuietThreadingHTTPServer, make_handler
+from okam_native.bridge import (
+    FFMPEG_STDERR_LIMIT_BYTES,
+    BridgeRegistry,
+    CameraBridge,
+    QuietThreadingHTTPServer,
+    _drain_bounded_stderr,
+    make_handler,
+)
 from okam_native.session import SessionStatus
 
 
@@ -462,6 +469,7 @@ def test_hacs_muxer_maps_pcma_to_aac_without_changing_h264(monkeypatch):
             self.kwargs = kwargs
             self.stdin = Pipe()
             self.stdout = io.BytesIO(b"mpegts")
+            self.stderr = io.BytesIO(b"Unknown input format password=do-not-log\n")
             self.returncode = 0
             self.pid = 123
         def poll(self):
@@ -498,6 +506,15 @@ def test_hacs_muxer_maps_pcma_to_aac_without_changing_h264(monkeypatch):
     assert "-c:a" in command and command[command.index("-c:a") + 1] == "aac"
     assert command[command.index("-c:v") + 1] == "copy"
     assert any(event == "hacs_audio_mode" for event, _fields in session.events)
+    muxer_exit = next(fields for event, fields in session.events if event == "muxer_exit")
+    assert "Unknown input format" in muxer_exit["muxer_stderr"]
+    assert "do-not-log" not in muxer_exit["muxer_stderr"]
+
+
+def test_ffmpeg_stderr_capture_is_bounded() -> None:
+    captured = bytearray()
+    _drain_bounded_stderr(io.BytesIO(b"x" * (FFMPEG_STDERR_LIMIT_BYTES + 100)), captured)
+    assert len(captured) == FFMPEG_STDERR_LIMIT_BYTES
 
 
 def test_unexpected_request_exception_logs_safe_production_context(capsys) -> None:

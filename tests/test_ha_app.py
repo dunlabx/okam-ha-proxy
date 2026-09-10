@@ -79,7 +79,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert re.fullmatch(r"2\.0\.0(?:-rc[1-6])?", str(config["version"]))
+    assert re.fullmatch(r"2\.0\.0(?:-rc[1-9])?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["webui"] == "http://[HOST]:[PORT:8099]"
     assert config["hassio_api"] is True
@@ -322,6 +322,9 @@ def test_image_ffmpeg_can_mux_the_live_stream() -> None:
     assert "--enable-muxer=mpegts" in dockerfile
     assert "--enable-muxer=image2pipe" in dockerfile
     assert "--enable-demuxer=h264" in dockerfile
+    assert "--enable-demuxer=pcm_alaw" in dockerfile
+    assert "--enable-filter=aresample" in dockerfile
+    assert "--enable-encoder=aac" in dockerfile
 
 
 def test_latest_tag_only_ever_follows_main() -> None:

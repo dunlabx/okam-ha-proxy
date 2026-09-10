@@ -28,6 +28,7 @@ print = timestamped_print
 MAX_REQUEST_BYTES = 4096
 STREAM_CHUNK_BYTES = 32 * 1024
 MEDIA_WRITE_TIMEOUT_SECONDS = 5.0
+FFMPEG_STDERR_LIMIT_BYTES = 8192
 # A client going away mid-request is normal here: the supervisor polls the
 # bridge, and media consumers disconnect whenever a view closes.
 _EXPECTED_DISCONNECTS = (
@@ -44,6 +45,26 @@ def _redact_diagnostic_text(value: str) -> str:
     """Keep request diagnostics useful without echoing credential material."""
 
     return _SECRET_TEXT.sub(r"\1\2<redacted>", value).replace("\n", "\\n")
+
+
+def _drain_bounded_stderr(stream: object, buffer: bytearray) -> None:
+    """Drain a muxer's stderr without allowing it to block or grow unbounded."""
+
+    read = getattr(stream, "read", None)
+    if not callable(read):
+        return
+    try:
+        while True:
+            chunk = read(4096)
+            if not chunk:
+                return
+            if not isinstance(chunk, (bytes, bytearray)):
+                chunk = str(chunk).encode("utf-8", "replace")
+            remaining = FFMPEG_STDERR_LIMIT_BYTES - len(buffer)
+            if remaining > 0:
+                buffer.extend(chunk[:remaining])
+    except (OSError, ValueError):
+        return
 
 
 def _request_camera_uid(path: str) -> str | None:
@@ -524,6 +545,8 @@ def make_handler(
                 active_acquire_elapsed_ms=round((time.monotonic() - request_started) * 1000, 1),
             )
             muxer: subprocess.Popen[bytes] | None = None
+            stderr_buffer = bytearray()
+            stderr_thread: threading.Thread | None = None
             writer: threading.Thread | None = None
             audio_writer: threading.Thread | None = None
             audio_read_fd: int | None = None
@@ -565,7 +588,7 @@ def make_handler(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     bufsize=0,
                     pass_fds=pass_fds,
                 )
@@ -577,6 +600,13 @@ def make_handler(
                 subscription.close()
                 self._json(503, {"error": "stream_unavailable"})
                 return
+            if muxer.stderr is not None:
+                stderr_thread = threading.Thread(
+                    target=_drain_bounded_stderr,
+                    args=(muxer.stderr, stderr_buffer),
+                    daemon=True,
+                )
+                stderr_thread.start()
             if audio_read_fd is not None:
                 os.close(audio_read_fd)
                 audio_read_fd = None
@@ -688,11 +718,17 @@ def make_handler(
                         os.close(audio_write_fd)
                     except OSError:
                         pass
+                if stderr_thread is not None:
+                    stderr_thread.join(timeout=2)
+                muxer_stderr = _redact_diagnostic_text(
+                    bytes(stderr_buffer).decode("utf-8", "replace")
+                )
                 _session_diagnostic(
                     bridge,
                     "muxer_exit",
                     muxer_output_bytes_total=output_bytes if "output_bytes" in locals() else 0,
                     muxer_exit_code=muxer.returncode if muxer is not None else None,
+                    **({"muxer_stderr": muxer_stderr} if muxer_stderr else {}),
                 )
                 _session_diagnostic(
                     bridge,
