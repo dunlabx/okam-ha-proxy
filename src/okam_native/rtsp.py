@@ -14,7 +14,7 @@ import socket
 import socketserver
 import threading
 import time
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from .bridge import BridgeRegistry, CameraBridge
 from .cs2 import MAX_FRAME_BYTES
@@ -27,6 +27,21 @@ RTP_CLOCK = 90_000
 AUDIO_CLOCK = 16_000
 MAX_RTP_PAYLOAD = 1_400
 FRAME_TICKS = 3_000  # stable fallback clock: 30 synthetic frames per second
+
+RTSP_AUDIO_COMPATIBILITY_MODES = (
+    "baseline",
+    "auto_recvonly",
+    "explicit_recvonly",
+    "compat_control",
+)
+DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE = "auto_recvonly"
+
+
+def _audio_compatibility_mode(value: object) -> str:
+    """Return a supported receive-audio SDP mode without changing video."""
+
+    mode = value if isinstance(value, str) else DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
+    return mode if mode in RTSP_AUDIO_COMPATIBILITY_MODES else DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
 
 
 class _BitReader:
@@ -241,7 +256,19 @@ class _AccessUnitAssembler:
         return []
 
 
-def _sdp(bridge: CameraBridge, host: str, port: int) -> bytes:
+def _sdp(
+    bridge: CameraBridge,
+    host: str,
+    port: int,
+    audio_compatibility_mode: str = DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE,
+) -> bytes:
+    mode = _audio_compatibility_mode(audio_compatibility_mode)
+    camera_uid = str(getattr(bridge, "camera_uid", "") or getattr(bridge, "camera_id", ""))
+    audio_control = "trackID=1"
+    if mode == "compat_control" and camera_uid:
+        # An absolute control URI avoids relying on Content-Base joining while
+        # retaining the canonical UID and audio track.
+        audio_control = f"rtsp://{host}:{port}/{quote(camera_uid, safe='')}/trackID=1"
     parameter_sets = getattr(bridge.session, "parameter_sets", None)
     sps, pps = parameter_sets() if callable(parameter_sets) else (b"", b"")
     attrs = [
@@ -258,9 +285,12 @@ def _sdp(bridge: CameraBridge, host: str, port: int) -> bytes:
         "m=audio 0 RTP/AVP 97",
         "c=IN IP4 0.0.0.0",
         "a=rtpmap:97 PCMA/16000/1",
-        "a=control:trackID=1",
-        "a=sendrecv",
+        f"a=control:{audio_control}",
     ]
+    if mode == "baseline":
+        attrs.append("a=sendrecv")
+    elif mode == "explicit_recvonly":
+        attrs.append("a=recvonly")
     if len(sps) >= 4 and len(pps) >= 4:
         sps_payload = sps[4:] if sps[:4] == b"\x00\x00\x00\x01" else sps[3:]
         pps_payload = pps[4:] if pps[:4] == b"\x00\x00\x00\x01" else pps[3:]
@@ -297,6 +327,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._saw_live = False
         self._media_generation: int | None = None
         self._codec_transition_seen = False
+        self._sdp_mode_logged = False
 
     def _diagnostic(self, event: str, **fields: object) -> None:
         bridge = self._diagnostic_camera
@@ -380,7 +411,28 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             self._reply(404, cseq)
             return True
         if method == "DESCRIBE":
-            body = _sdp(bridge, self.server.host, self.server.port)
+            mode = self.server.audio_compatibility_mode
+            body = _sdp(
+                bridge,
+                parsed.hostname or self.server.host,
+                parsed.port or self.server.port,
+                mode,
+            )
+            if not self._sdp_mode_logged:
+                direction = {
+                    "baseline": "sendrecv",
+                    "explicit_recvonly": "recvonly",
+                    "auto_recvonly": "omitted",
+                    "compat_control": "omitted",
+                }[mode]
+                control = "absolute_uid_trackID=1" if mode == "compat_control" else "trackID=1"
+                self._diagnostic(
+                    "rtsp_audio_sdp_mode",
+                    mode=mode,
+                    direction=direction,
+                    control=control,
+                )
+                self._sdp_mode_logged = True
             self._reply(200, cseq, {"Content-Type": "application/sdp", "Content-Base": target}, body)
             return True
         if method == "SETUP":
@@ -646,7 +698,13 @@ class RTSPServer(_ThreadingTCPServer):
 
     allow_reuse_address = True
 
-    def __init__(self, server_address: tuple[str, int], registry: BridgeRegistry) -> None:
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        registry: BridgeRegistry,
+        audio_compatibility_mode: str = DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE,
+    ) -> None:
         self.registry = registry
+        self.audio_compatibility_mode = _audio_compatibility_mode(audio_compatibility_mode)
         super().__init__(server_address, _RTSPHandler)
         self.host, self.port = self.server_address

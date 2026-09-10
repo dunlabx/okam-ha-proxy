@@ -38,6 +38,17 @@ configuration:
   idle_timeout_seconds:
     name: Idle disconnect delay
     description: Seconds to wait after the final viewer closes before stopping and disconnecting the camera.
+  arp_wake_listener:
+    name: ARP wake-up listener
+    description: Detect when configured battery cameras wake on the local network and automatically switch their RTSP stream from standby to live video.
+  rtsp_audio_compatibility_mode:
+    name: RTSP audio compatibility mode
+    description: Select the receive-audio SDP negotiation variant for Frigate or go2rtc.
+    options:
+      baseline: RC4 baseline (sendrecv)
+      auto_recvonly: Automatic receive-only
+      explicit_recvonly: Explicit receive-only
+      compat_control: Compatibility control URI
   run_connect_test:
     name: Run connection diagnostic
     description: Perform a bounded P2P connection test when the app starts. Leave disabled for normal use.
@@ -50,9 +61,6 @@ configuration:
   run_snapshot_test:
     name: Run complete snapshot diagnostic
     description: Wake, connect, authenticate, receive H.264, create one JPEG, and disconnect when the app starts. Leave disabled for normal use.
-  arp_wake_listener:
-    name: ARP wake-up listener
-    description: Detect when configured battery cameras wake on the local network and automatically switch their RTSP stream from standby to live video.
   debug_credentials:
     name: Debug credentials
     description: Temporary credential diagnostics for troubleshooting. Leave disabled normally.

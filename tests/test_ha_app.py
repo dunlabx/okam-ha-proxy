@@ -79,7 +79,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert re.fullmatch(r"2\.0\.0(?:-rc[1-4])?", str(config["version"]))
+    assert re.fullmatch(r"2\.0\.0(?:-rc[1-5])?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["webui"] == "http://[HOST]:[PORT:8099]"
     assert config["hassio_api"] is True
@@ -94,8 +94,12 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(schema, dict)
     assert set(options) <= set(schema)
     assert options["cameras"] == []
+    assert options["rtsp_audio_compatibility_mode"] == "auto_recvonly"
     assert schema["cameras"] == [{"uid": "str", "alias": "str?", "password": "password?", "auth_method": "list(automatic|password)", "battery_camera": "bool", "ip": "str?"}]
     assert _enum_values(schema["cameras"][0]["auth_method"]) == {"automatic", "password"}
+    assert _enum_values(schema["rtsp_audio_compatibility_mode"]) == {
+        "baseline", "auto_recvonly", "explicit_recvonly", "compat_control"
+    }
     for key, value in schema.items():
         _assert_supervisor_schema_element(value, f"schema.{key}")
 

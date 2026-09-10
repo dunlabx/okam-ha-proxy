@@ -51,7 +51,7 @@ from okam_native.p2p import (
 )
 from okam_native.session import NativeStreamSession
 from okam_native.wakeup import WakeError, load_wake_credentials, wake_camera
-from okam_native.rtsp import RTSPServer
+from okam_native.rtsp import DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE, RTSPServer
 from okam_native.logging import PROCESS_ID, timestamped_print
 
 
@@ -930,7 +930,14 @@ def main() -> int:
     server = QuietThreadingHTTPServer(
         ("0.0.0.0", api_port), make_handler(get_status, get_bridge)
     )
-    rtsp_server = RTSPServer(("0.0.0.0", rtsp_port), BRIDGES)
+    rtsp_audio_mode = options.get(
+        "rtsp_audio_compatibility_mode", DEFAULT_RTSP_AUDIO_COMPATIBILITY_MODE
+    )
+    rtsp_server = RTSPServer(("0.0.0.0", rtsp_port), BRIDGES, rtsp_audio_mode)
+    print(
+        f"rtsp_audio_compatibility_mode mode={rtsp_server.audio_compatibility_mode}",
+        flush=True,
+    )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     threading.Thread(target=rtsp_server.serve_forever, daemon=True).start()
     stop = threading.Event()

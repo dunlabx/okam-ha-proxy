@@ -1,10 +1,21 @@
 import io
 import os
+import re
 import threading
+from types import SimpleNamespace
+
+import pytest
 
 from okam_native.p2p import decode_audio_header, encode_audio_frame, encode_talkback_frame
-from okam_native.rtsp import AUDIO_CLOCK, RTP_AUDIO_PAYLOAD_TYPE, _RTSPHandler, _sdp
-from okam_native.session import NativeStreamSession
+from okam_native.bridge import BridgeRegistry, CameraBridge
+from okam_native.rtsp import (
+    AUDIO_CLOCK,
+    RTP_AUDIO_PAYLOAD_TYPE,
+    RTSP_AUDIO_COMPATIBILITY_MODES,
+    _RTSPHandler,
+    _sdp,
+)
+from okam_native.session import NativeStreamSession, SessionStatus
 
 
 def test_pcma_frame_is_length_framed_and_bounded():
@@ -27,6 +38,144 @@ def test_sdp_advertises_dynamic_pcma_audio_track():
     assert b"m=audio 0 RTP/AVP 97" in body
     assert b"a=rtpmap:97 PCMA/16000/1" in body
     assert b"a=control:trackID=1" in body
+
+
+@pytest.mark.parametrize("mode", RTSP_AUDIO_COMPATIBILITY_MODES)
+def test_rtsp_receive_audio_negotiation_modes_reach_audio_rtp(monkeypatch, mode):
+    """Exercise DESCRIBE -> SETUP(video/audio) -> PLAY, including SDP parsing."""
+
+    class Subscription:
+        def __iter__(self):
+            return iter(())
+
+        def iter_audio(self):
+            yield b"a" * 640
+            yield b"b" * 640
+
+        def close(self):
+            pass
+
+    class Session:
+        def __init__(self):
+            self.subscription = Subscription()
+
+        def parameter_sets(self):
+            return b"", b""
+
+        def acquire(self, **_kwargs):
+            return self.subscription
+
+        def status(self):
+            return SessionStatus(False, 0, True, None, False)
+
+    class Request:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    class ImmediateThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr("okam_native.rtsp.threading.Thread", ImmediateThread)
+    session = Session()
+    bridge = CameraBridge(
+        camera_id="UID_NEGOTIATION",
+        camera_uid="UID_NEGOTIATION",
+        camera_name="Negotiation",
+        api_token="token",
+        session=session,
+        ffmpeg="ffmpeg",
+    )
+    registry = BridgeRegistry()
+    registry.add(bridge)
+    server = SimpleNamespace(
+        registry=registry,
+        host="127.0.0.1",
+        port=8100,
+        audio_compatibility_mode=mode,
+    )
+    handler = object.__new__(_RTSPHandler)
+    handler.server = server
+    handler.request = Request()
+    handler._session_id = "session"
+    handler._bridge = None
+    handler._subscription = None
+    handler._stop_stream = threading.Event()
+    handler._write_lock = threading.Lock()
+    handler._stream_thread = None
+    handler._audio_thread = None
+    handler._rtp_channel = 0
+    handler._track_channels = {}
+    handler._diagnostic_started = 0.0
+    handler._diagnostic_camera = None
+    handler._rtsp_bytes = 0
+    handler._rtsp_chunks = 0
+    handler._audio_packets = 0
+    handler._audio_bytes = 0
+    handler._saw_standby = False
+    handler._saw_live = False
+    handler._media_generation = None
+    handler._codec_transition_seen = False
+    handler._sdp_mode_logged = False
+    handler._diagnostic = lambda *_args, **_kwargs: None
+    handler._stream = lambda: None
+    try:
+        describe = (
+            b"DESCRIBE rtsp://127.0.0.1/UID_NEGOTIATION RTSP/1.0\r\n"
+            b"CSeq: 1\r\n\r\n"
+        )
+        assert handler._handle_request(describe) is True
+        sdp = handler.request.sent[-1].split(b"\r\n\r\n", 1)[1]
+        video_section, audio_section = sdp.split(b"m=audio", 1)
+        audio_section = b"m=audio" + audio_section
+        assert b"m=video 0 RTP/AVP 96" in video_section
+        assert b"a=rtpmap:96 H264/90000" in video_section
+        assert b"a=control:trackID=0" in video_section
+        assert b"a=rtpmap:97 PCMA/16000/1" in audio_section
+        assert b"m=audio 0 RTP/AVP 97" in audio_section
+        if mode == "baseline":
+            assert b"a=sendrecv" in audio_section
+        elif mode == "explicit_recvonly":
+            assert b"a=recvonly" in audio_section
+            assert b"a=sendrecv" not in audio_section
+        else:
+            assert b"a=sendrecv" not in audio_section
+            assert b"a=recvonly" not in audio_section
+        control = re.search(rb"a=control:([^\r\n]+)", audio_section).group(1)
+        if mode == "compat_control":
+            assert control == b"rtsp://127.0.0.1:8100/UID_NEGOTIATION/trackID=1"
+            audio_target = control
+        else:
+            assert control == b"trackID=1"
+            audio_target = b"rtsp://127.0.0.1/UID_NEGOTIATION/trackID=1"
+        assert handler._handle_request(
+            b"SETUP rtsp://127.0.0.1/UID_NEGOTIATION/trackID=0 RTSP/1.0\r\n"
+            b"CSeq: 2\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n"
+        ) is True
+        assert handler._handle_request(
+            b"SETUP " + audio_target + b" RTSP/1.0\r\n"
+            b"CSeq: 3\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3\r\n\r\n"
+        ) is True
+        assert handler._track_channels == {0: 0, 1: 2}
+        assert handler._handle_request(
+            b"PLAY rtsp://127.0.0.1/UID_NEGOTIATION RTSP/1.0\r\nCSeq: 4\r\n\r\n"
+        ) is True
+        packets = [item for item in handler.request.sent if item.startswith(b"$")]
+        assert len(packets) == 2
+        assert all(packet[1] == 2 for packet in packets)
+        timestamps = [int.from_bytes(packet[8:12], "big") for packet in packets]
+        assert (timestamps[1] - timestamps[0]) & 0xFFFFFFFF == 640
+    finally:
+        handler._stop_stream.set()
 
 
 def test_audio_queue_is_separate_from_video_queue():

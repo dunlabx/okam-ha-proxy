@@ -17,14 +17,22 @@ cameras are exposed by default; use `cameras` to restrict them or assign aliases
 | `account_password` | Password of the O-KAM account |
 | `api_token` | A random local secret of at least 16 characters chosen by you |
 | `cameras` | List of mappings with required `uid`, optional `alias`, optional `password`/`auth_method`, `battery_camera` (defaults to `true` for old configurations), and optional IPv4 `ip`; empty means all account cameras |
-| `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
 | `arp_wake_listener` | Receive-only ARP wake-up listener for configured battery cameras |
+| `rtsp_audio_compatibility_mode` | Receive-audio SDP mode: `auto_recvonly` (default), `explicit_recvonly`, `compat_control`, or `baseline` |
 | `api_port` | HTTP API port; default `8099` |
 | `rtsp_port` | RTSP-over-TCP port; default `8100` |
 | `idle_timeout_seconds` | Delay before disconnecting after the final viewer closes; `120` is recommended |
+| `debug_credentials` | Temporary controlled diagnostic mode; leave `false` normally |
 
 The API token is not an O-KAM credential. Create a new random value and enter
 the identical value when adding the Home Assistant integration.
+
+The receive-audio SDP mode changes only the RTSP audio media negotiation. The
+`baseline` mode advertises `a=sendrecv`; `auto_recvonly` omits a media direction;
+`explicit_recvonly` advertises `a=recvonly`; and `compat_control` omits the
+direction while advertising an absolute audio control URI
+`rtsp://HOST:PORT/CAMERA_UID/trackID=1`. All modes keep the same H.264 video track, PCMA/16000
+audio payload type 97, and camera UID routing.
 
 After account enumeration, the token-protected `GET /api/devices` endpoint
 lists the selected camera names and UIDs. Use that response to verify the
