@@ -385,6 +385,11 @@ static bool forward_h264_frames(client_read_fn client_read, void *client, const 
                                 unsigned int *frames, unsigned long long *bytes,
                                 bool *keyframe_seen, unsigned int *h265_frames) {
     unsigned long long packet_count = 0;
+    unsigned int audio_frame_count = 0;
+    unsigned long long audio_bytes_total = 0;
+    unsigned int audio_pipe_frames = 0;
+    unsigned long long audio_pipe_bytes = 0;
+    unsigned int audio_pipe_errors = 0;
     while (stream_running) {
         time_t deadline = time(NULL) + STREAM_TIMEOUT_SECONDS;
         unsigned char header[VIDEO_HEADER_BYTES];
@@ -412,14 +417,49 @@ static bool forward_h264_frames(client_read_fn client_read, void *client, const 
                 diagnostic_event("native_video_packet_progress", uid, extra);
             }
             if (header[4] == 0x0cU) {
+                audio_frame_count++;
+                audio_bytes_total += length;
+                if (audio_frame_count == 1) {
+                    char extra[96];
+                    snprintf(extra, sizeof(extra), "frame_type=12 payload_bytes=%u channel=%u", length, VIDEO_CHANNEL);
+                    diagnostic_event("native_audio_first_frame", uid, extra);
+                } else if (audio_frame_count % 250 == 0) {
+                    char extra[128];
+                    snprintf(extra, sizeof(extra), "audio_frame_count=%u audio_bytes_total=%llu",
+                             audio_frame_count, audio_bytes_total);
+                    diagnostic_event("native_audio_progress", uid, extra);
+                }
                 int fd = atoi(getenv("OKAM_AUDIO_FD") != NULL ? getenv("OKAM_AUDIO_FD") : "-1");
                 if (fd >= 0 && length <= 4096) {
                     unsigned char framed[8];
                     memcpy(framed, "OKA1", 4);
                     framed[4] = (unsigned char)(length >> 24); framed[5] = (unsigned char)(length >> 16);
                     framed[6] = (unsigned char)(length >> 8); framed[7] = (unsigned char)length;
-                    (void)write(fd, framed, sizeof(framed));
-                    (void)write(fd, payload, length);
+                    ssize_t header_written = write(fd, framed, sizeof(framed));
+                    ssize_t payload_written = write(fd, payload, length);
+                    if (header_written == (ssize_t)sizeof(framed) && payload_written == (ssize_t)length) {
+                        audio_pipe_frames++;
+                        audio_pipe_bytes += length;
+                        if (audio_pipe_frames == 1) {
+                            char extra[128];
+                            snprintf(extra, sizeof(extra), "frame_bytes=%u audio_pipe_frames=%u audio_pipe_bytes_total=%llu",
+                                     length, audio_pipe_frames, audio_pipe_bytes);
+                            diagnostic_event("audio_pipe_first_write", uid, extra);
+                        } else if (audio_pipe_frames % 250 == 0) {
+                            char extra[128];
+                            snprintf(extra, sizeof(extra), "audio_pipe_frames=%u audio_pipe_bytes_total=%llu",
+                                     audio_pipe_frames, audio_pipe_bytes);
+                            diagnostic_event("audio_pipe_progress", uid, extra);
+                        }
+                    } else {
+                        audio_pipe_errors++;
+                        if (audio_pipe_errors == 1 || audio_pipe_errors % 250 == 0) {
+                            char extra[128];
+                            snprintf(extra, sizeof(extra), "error_count=%u frame_bytes=%u errno=%d",
+                                     audio_pipe_errors, length, errno);
+                            diagnostic_event(errno == EPIPE ? "audio_pipe_closed" : "audio_pipe_write_error", uid, extra);
+                        }
+                    }
                 }
             } else if (header[4] == 0x10U || header[4] == 0x11U) {
                 (*h265_frames)++;
@@ -615,8 +655,16 @@ int main(int argc, char **argv) {
             diagnostic_event("livestream_command_begin", uid, "streamid=10 substream=2");
             stream_start_sent = client_write_cgi(
                 client, "livestream.cgi?streamid=10&substream=2&", 5000);
-            if (stream_start_sent)
-                (void)client_write_cgi(client, "audiostream.cgi?streamid=7&", 5000);
+            if (stream_start_sent) {
+                diagnostic_event("audio_start_command_begin", uid, "command=audiostream.cgi?streamid=7&");
+                bool audio_command_result = client_write_cgi(client, "audiostream.cgi?streamid=7&", 5000);
+                diagnostic_event("audio_start_command_sent", uid, "status=sent");
+                {
+                    char extra[64];
+                    snprintf(extra, sizeof(extra), "result=%s", audio_command_result ? "accepted" : "rejected");
+                    diagnostic_event("audio_start_command_result", uid, extra);
+                }
+            }
             diagnostic_event("livestream_command_sent", uid,
                              stream_start_sent ? "stream_start_sent=true" : "stream_start_sent=false");
             if (stream_start_sent) {

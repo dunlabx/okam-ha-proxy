@@ -149,6 +149,9 @@ class NativeStreamSession:
         self._helper_stdout_bytes = 0
         self._helper_stdout_chunks = 0
         self._h264_frame_count = 0
+        self._audio_frame_count = 0
+        self._audio_bytes_total = 0
+        self._audio_drop_count = 0
         self._diagnostic_events: set[str] = set()
         self._deferred_activation: Callable[[], None] | None = None
         if self._standby_frame:
@@ -609,6 +612,9 @@ class NativeStreamSession:
         self._helper_stdout_bytes = 0
         self._helper_stdout_chunks = 0
         self._h264_frame_count = 0
+        self._audio_frame_count = 0
+        self._audio_bytes_total = 0
+        self._audio_drop_count = 0
         self._diagnostic_events.clear()
         self._set_state_locked("AUTHENTICATING")
         self._emit(
@@ -845,9 +851,24 @@ class NativeStreamSession:
                 with self._lock:
                     if self._process_generation != generation:
                         return
+                    self._audio_frame_count += 1
+                    self._audio_bytes_total += len(payload)
+                    if self._audio_frame_count == 1:
+                        self._diagnostic(
+                            "session_audio_first_frame",
+                            frame_bytes=len(payload),
+                            audio_subscriber_count=len(self._audio_subscribers),
+                        )
+                    elif self._audio_frame_count % 250 == 0:
+                        self._diagnostic(
+                            "session_audio_progress",
+                            audio_frame_count=self._audio_frame_count,
+                            audio_bytes_total=self._audio_bytes_total,
+                            audio_subscriber_count=len(self._audio_subscribers),
+                        )
                     subscribers = tuple(self._audio_subscribers.values())
                 for chunks in subscribers:
-                    self._put_chunk(chunks, payload)
+                    self._put_audio_chunk(chunks, payload)
         except (OSError, P2PError):
             return
         finally:
@@ -952,6 +973,26 @@ class NativeStreamSession:
         try:
             chunks.put_nowait(value)
         except queue.Full:
+            try:
+                chunks.get_nowait()
+                chunks.put_nowait(value)
+            except (queue.Empty, queue.Full):
+                pass
+
+    def _put_audio_chunk(self, chunks: queue.Queue[bytes | object], value: bytes) -> None:
+        """Queue audio with the existing bounded/drop-oldest policy and diagnostics."""
+        try:
+            chunks.put_nowait(value)
+        except queue.Full:
+            with self._lock:
+                self._audio_drop_count += 1
+                count = self._audio_drop_count
+                if count == 1 or count % 250 == 0:
+                    self._diagnostic(
+                        "session_audio_drop",
+                        audio_drop_count=count,
+                        audio_subscriber_count=len(self._audio_subscribers),
+                    )
             try:
                 chunks.get_nowait()
                 chunks.put_nowait(value)

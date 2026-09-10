@@ -47,13 +47,16 @@ def _audio_fd() -> int | None:
         return None
 
 
-def _write_audio(fd: int | None, payload: bytes) -> None:
+def _write_audio(fd: int | None, payload: bytes) -> bool | str | None:
     if fd is None or not payload:
-        return
+        return None
+    framed = encode_audio_frame(payload)
     try:
-        os.write(fd, encode_audio_frame(payload))
-    except (BlockingIOError, BrokenPipeError, OSError):
-        pass
+        return os.write(fd, framed) == len(framed)
+    except BrokenPipeError:
+        return "closed"
+    except (BlockingIOError, OSError):
+        return False
 
 
 def _talkback_loop(session: CS2Session) -> None:
@@ -104,6 +107,40 @@ def _diag(event: str, **fields: object) -> None:
         file=sys.stderr,
         flush=True,
     )
+
+
+def _record_native_audio(frame_type: int, payload: bytes, counters: dict[str, int]) -> bool:
+    """Emit bounded diagnostics for one native camera-audio frame."""
+    if frame_type != 0x0C:
+        return False
+    counters["frames"] = counters.get("frames", 0) + 1
+    counters["bytes"] = counters.get("bytes", 0) + len(payload)
+    frames = counters["frames"]
+    if frames == 1:
+        _diag("native_audio_first_frame", frame_type=frame_type, payload_bytes=len(payload))
+    elif frames % 250 == 0:
+        _diag("native_audio_progress", audio_frame_count=frames, audio_bytes_total=counters["bytes"])
+    return True
+
+
+def _record_audio_pipe(result: bool | str | None, frame_bytes: int, counters: dict[str, int]) -> None:
+    """Emit bounded diagnostics for helper-to-parent audio pipe writes."""
+    if result is True:
+        counters["frames"] = counters.get("frames", 0) + 1
+        counters["bytes"] = counters.get("bytes", 0) + frame_bytes
+        frames = counters["frames"]
+        if frames == 1:
+            _diag("audio_pipe_first_write", frame_bytes=frame_bytes, audio_pipe_frames=frames, audio_pipe_bytes_total=counters["bytes"])
+        elif frames % 250 == 0:
+            _diag("audio_pipe_progress", audio_pipe_frames=frames, audio_pipe_bytes_total=counters["bytes"])
+    elif result == "closed":
+        counters["closed"] = counters.get("closed", 0) + 1
+        if counters["closed"] == 1:
+            _diag("audio_pipe_closed", frame_bytes=frame_bytes)
+    elif result is False:
+        counters["errors"] = counters.get("errors", 0) + 1
+        if counters["errors"] == 1 or counters["errors"] % 250 == 0:
+            _diag("audio_pipe_write_error", error_count=counters["errors"], frame_bytes=frame_bytes)
 
 
 def _debug_credentials_enabled() -> bool:
@@ -205,6 +242,8 @@ def run(
     accepted_password = device_password or ""
     stdout_chunks = 0
     native_video_packets = 0
+    native_audio: dict[str, int] = {}
+    audio_pipe: dict[str, int] = {}
     audio_fd = _audio_fd()
     if audio_fd is not None:
         os.set_blocking(audio_fd, False)
@@ -306,10 +345,12 @@ def run(
         # Audio is a separate CGI lifecycle on the same authenticated native
         # session. It is never sent while the process is in standby.
         if mode == "stream-stdout":
+            _diag("audio_start_command_begin", command="audiostream.cgi?streamid=7&")
             write_command(
                 session,
                 make_cgi_request("audiostream.cgi?streamid=7&", accepted_user, accepted_password),
             )
+            _diag("audio_start_command_sent", status="sent")
             threading.Thread(target=_talkback_loop, args=(session,), daemon=True).start()
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
@@ -318,8 +359,10 @@ def run(
             if frame_type == 0x0C:
                 # The observed camera framing is PCMA, 16 kHz mono, 640-byte
                 # payloads at roughly 40 ms. Keep H264 stdout untouched.
-                if len(payload) == AUDIO_FRAME_BYTES:
-                    _write_audio(audio_fd, payload)
+                _record_native_audio(frame_type, payload, native_audio)
+                if frame_type == 0x0C and len(payload) == AUDIO_FRAME_BYTES:
+                    write_result = _write_audio(audio_fd, payload)
+                    _record_audio_pipe(write_result, len(payload), audio_pipe)
                 continue
             native_video_packets += 1
             if native_video_packets == 1:

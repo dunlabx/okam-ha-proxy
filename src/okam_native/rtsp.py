@@ -291,6 +291,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._diagnostic_camera: CameraBridge | None = None
         self._rtsp_bytes = 0
         self._rtsp_chunks = 0
+        self._audio_packets = 0
+        self._audio_bytes = 0
         self._saw_standby = False
         self._saw_live = False
         self._media_generation: int | None = None
@@ -426,6 +428,8 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             if 1 in self._track_channels:
                 self._audio_thread = threading.Thread(target=self._stream_audio, daemon=True)
                 self._audio_thread.start()
+            else:
+                self._diagnostic("rtsp_audio_track_not_subscribed")
             return True
         if method == "GET_PARAMETER":
             self._reply(200, cseq, {"Session": self._session_id})
@@ -560,6 +564,22 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                 frame = bytes((0x24, channel)) + (len(header) + len(payload)).to_bytes(2, "big") + header + payload
                 with self._write_lock:
                     self.request.sendall(frame)
+                self._audio_packets += 1
+                self._audio_bytes += len(payload)
+                if self._audio_packets == 1:
+                    self._diagnostic(
+                        "rtsp_audio_first_packet",
+                        payload_type=RTP_AUDIO_PAYLOAD_TYPE,
+                        clock_rate=AUDIO_CLOCK,
+                        channels=1,
+                        payload_bytes=len(payload),
+                    )
+                elif self._audio_packets % 250 == 0:
+                    self._diagnostic(
+                        "rtsp_audio_progress",
+                        rtp_audio_packet_count=self._audio_packets,
+                        rtp_audio_payload_bytes_total=self._audio_bytes,
+                    )
                 sequence = (sequence + 1) & 0xFFFF
                 timestamp = (timestamp + len(payload)) & 0xFFFFFFFF
         except (OSError, ConnectionError):
