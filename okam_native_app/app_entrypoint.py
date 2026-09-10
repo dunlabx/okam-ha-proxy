@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 import platform
@@ -12,6 +13,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from okam_native.account import (
@@ -213,6 +216,107 @@ def load_vendor_runtime() -> None:
         raise RuntimeError("native loader did not satisfy every required symbol")
     set_status(loader_ready=True, phase="native_loader_ready", runtime_arch=RUNTIME_ARCH)
     print("native_loader_ready=true", flush=True)
+
+
+def _supervisor_ipv4_candidates(payload: object) -> list[tuple[bool, str]]:
+    """Extract host interface IPv4s from the documented Supervisor response."""
+
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return []
+    interfaces = data.get("interfaces", [])
+    if isinstance(interfaces, dict):
+        items = list(interfaces.values())
+    elif isinstance(interfaces, list):
+        items = interfaces
+    else:
+        items = []
+    docker_networks: list[ipaddress.IPv4Network] = []
+    docker = data.get("docker")
+    if isinstance(docker, dict):
+        docker_address = docker.get("address")
+        if isinstance(docker_address, str):
+            try:
+                network = ipaddress.ip_network(docker_address, strict=False)
+            except ValueError:
+                pass
+            else:
+                if network.version == 4:
+                    docker_networks.append(network)
+    candidates: list[tuple[bool, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        interface_name = str(item.get("interface", item.get("name", ""))).casefold()
+        if "docker" in interface_name or "hassio" in interface_name:
+            continue
+        ipv4 = item.get("ipv4")
+        address = ipv4.get("ip_address") if isinstance(ipv4, dict) else None
+        if not address:
+            address = item.get("ip_address")
+        if not isinstance(address, str):
+            continue
+        host = address.split("/", 1)[0].strip()
+        try:
+            parsed = ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        if (
+            parsed.version != 4
+            or parsed.is_loopback
+            or parsed.is_link_local
+            or parsed.is_unspecified
+            or parsed.is_multicast
+            or any(parsed in network for network in docker_networks)
+        ):
+            continue
+        candidates.append((item.get("primary") is True or (isinstance(ipv4, dict) and ipv4.get("primary") is True), host))
+    return candidates
+
+
+def resolve_supervisor_lan_ipv4() -> str | None:
+    """Read the host LAN IPv4 from Supervisor's documented network API.
+
+    The container's routing table and Docker address are deliberately ignored.
+    A missing token, permission error, malformed response, or only internal
+    addresses produces the documented fallback instead of a guessed URL.
+    """
+
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        return None
+    request = urllib.request.Request(
+        "http://supervisor/network/info",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError, UnicodeError, urllib.error.URLError):
+        return None
+    candidates = _supervisor_ipv4_candidates(payload)
+    if not candidates:
+        return None
+    # Supervisor marks the host's primary interface. Preserve response order
+    # among non-primary interfaces as a deterministic fallback.
+    return next((host for primary, host in candidates if primary), candidates[0][1])
+
+
+def log_bridge_urls(api_port: int) -> None:
+    """Print copyable bridge addresses without inventing a LAN address."""
+
+    print(f"Bridge internal URL: http://[HOST]:[PORT:{api_port}]", flush=True)
+    lan_host = resolve_supervisor_lan_ipv4()
+    if lan_host:
+        print(f"Bridge LAN URL: http://{lan_host}:{api_port}", flush=True)
+    else:
+        print(
+            "Bridge LAN URL: unavailable; configure HACS with "
+            f"http://<HOME_ASSISTANT_LAN_IP>:{api_port}",
+            flush=True,
+        )
 
 
 def load_options() -> dict[str, object]:
@@ -822,6 +926,7 @@ def main() -> int:
         or api_port == rtsp_port
     ):
         raise RuntimeError("api_port and rtsp_port must be valid and different")
+    log_bridge_urls(api_port)
     server = QuietThreadingHTTPServer(
         ("0.0.0.0", api_port), make_handler(get_status, get_bridge)
     )

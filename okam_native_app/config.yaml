@@ -4,6 +4,8 @@ slug: okam_ha_proxy
 description: Self-contained native O-KAM camera bridge for Home Assistant
 url: https://github.com/dunlabx/okam-ha-proxy
 image: ghcr.io/dunlabx/okam-ha-proxy
+webui: http://[HOST]:[PORT:8099]
+hassio_api: true
 arch:
   - aarch64
   - amd64

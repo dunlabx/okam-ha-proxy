@@ -192,9 +192,15 @@ the native camera stream remains H.264 passthrough.
    | Idle timeout | `120` seconds is recommended |
    | Status refresh interval | `900` seconds is recommended |
 
-Use the actual LAN address of Home Assistant, for example
-`http://192.168.1.20:8099`. Do not use `localhost` between separate add-on
-containers.
+Use the actual LAN address of the Home Assistant server on which the add-on
+runs, for example `http://192.168.1.20:8099`. Prefer a DHCP reservation or
+static LAN address for that host so the integration URL remains stable. The
+Bridge URL field is editable when the bridge runs on another machine. The
+Supervisor/internal add-on hostname may work in some environments, but the
+LAN address is the recommended path and is more reliable across Home Assistant
+Core and Stream paths. An unreachable internal hostname can appear as a DNS
+timeout, host unreachable, connection refused, missing video, or a stream
+worker error; it can also prevent a camera card from waking the camera.
 
 Each selected camera is also available as standard RTSP:
 
@@ -244,7 +250,7 @@ delay** from `30` to `120`. The change is applied immediately.
 - Update the **integration** from HACS.
 - Restart Home Assistant after an integration update.
 
-The current app and HACS integration release is `2.0.0`. Update the add-on
+The current unpublished candidate app and HACS integration version is `2.0.0-rc2`. Update the add-on
 and integration together for the session, ARP, and RTSP concurrency updates.
 
 ## Diagnostics

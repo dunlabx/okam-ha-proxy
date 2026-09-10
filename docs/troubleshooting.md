@@ -63,6 +63,31 @@ fallback credentials.
 The older startup message `camera_device_credential_was_unavailable` is handled
 by version 1.2.0 and later; update the app before further troubleshooting.
 
+## The HA camera entity exists but opening it does not wake the camera
+
+First check the integration's **Bridge URL**. When the add-on runs on this
+Home Assistant server, use the host LAN address and bridge port:
+
+```text
+http://<HOME_ASSISTANT_LAN_IP>:8099
+```
+
+You can safely check the token-protected device endpoint with a placeholder
+token (replace both placeholders locally; never paste a real token into an
+issue):
+
+```bash
+curl -H 'Authorization: Bearer <API_TOKEN>' \
+  http://<HOME_ASSISTANT_LAN_IP>:8099/api/devices
+```
+
+An internal Supervisor add-on hostname may work in some environments, but a
+LAN URL is the recommended configuration. An incorrect or stale internal URL
+can cause a DNS timeout, host unreachable, connection refused, no video, or a
+stream worker error. If the entry was created with the internal hostname,
+reconfigure it with the LAN URL; if the saved value cannot be changed, remove
+and recreate the HACS entry.
+
 ## The integration cannot connect
 
 - Confirm the app is running.

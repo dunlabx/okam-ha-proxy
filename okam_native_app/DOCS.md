@@ -63,6 +63,21 @@ account_enumerated=true raw_count=<n> parsed_count=<n> selected_count=<n>
 bridge_ready=true
 ```
 
+The app panel exposes its internal bridge URL through the Supervisor web UI
+entry (`http://[HOST]:[PORT:8099]`). Startup also prints a LAN URL immediately
+below it when the documented Supervisor `/network/info` API returns a primary
+host IPv4 address:
+
+```text
+Bridge internal URL: http://[HOST]:[PORT:8099]
+Bridge LAN URL: http://<HOME_ASSISTANT_LAN_IP>:8099
+```
+
+If the Supervisor network API is unavailable, the log prints
+`Bridge LAN URL: unavailable; configure HACS with
+http://<HOME_ASSISTANT_LAN_IP>:8099`. The app never substitutes a container,
+Docker, loopback, or default-gateway address.
+
 The readiness page is available at:
 
 ```text

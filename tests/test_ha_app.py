@@ -81,6 +81,8 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["description"], str) and config["description"]
     assert re.fullmatch(r"2\.0\.0(?:-rc[12])?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
+    assert config["webui"] == "http://[HOST]:[PORT:8099]"
+    assert config["hassio_api"] is True
     assert config["startup"] == "application"
     assert config["boot"] == "auto"
     assert config["ports"] == {"8099/tcp": 8099, "8100/tcp": 8100}
@@ -212,7 +214,9 @@ def test_repository_contains_camera_integration_for_native_api() -> None:
     strings = (component / "strings.json").read_text(encoding="utf-8")
     camera = (component / "camera.py").read_text(encoding="utf-8")
     assert '"version": "2.0.0"' in manifest
-    assert "http://dc28dd67-okam-ha-proxy:8099" in config_flow
+    assert "DEFAULT_BRIDGE_URL = \"\"" in config_flow
+    assert "default_bridge_url(self.hass)" in config_flow
+    assert "select_bridge_url" in config_flow
     assert "CameraEntityFeature.STREAM" in camera
     assert "_attr_has_entity_name = False" in camera
     assert "SLEEPING_PLACEHOLDER" in camera

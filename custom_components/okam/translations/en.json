@@ -4,23 +4,29 @@
     "step": {
       "user": {
         "title": "Connect to O-KAM Native Bridge",
-        "description": "Use the internal Home Assistant URL http://dc28dd67-okam-ha-proxy:8099 (or the host IP with port 8099) and the API token configured in the O-KAM Native Bridge app.",
+        "description": "Use the LAN address of the Home Assistant host running O-KAM HA Proxy, for example http://192.168.1.110:8099.",
         "data": {
-          "bridge_url": "Native bridge",
+          "bridge_url": "Bridge URL",
           "api_token": "API token",
           "camera_id": "UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
+        },
+        "data_description": {
+          "bridge_url": "When the proxy runs as a Home Assistant add-on, use the Home Assistant host LAN address on port 8099 (for example, http://192.168.1.110:8099). The field is editable when the bridge runs elsewhere."
         }
       },
       "reconfigure": {
         "title": "Reconfigure O-KAM Native Bridge",
         "data": {
-          "bridge_url": "Native bridge",
+          "bridge_url": "Bridge URL",
           "api_token": "API token",
           "camera_id": "UID or alias",
           "idle_timeout": "Idle disconnect delay (seconds)",
           "snapshot_interval": "Status refresh interval (seconds)"
+        },
+        "data_description": {
+          "bridge_url": "When the proxy runs as a Home Assistant add-on, use the Home Assistant host LAN address on port 8099 (for example, http://192.168.1.110:8099). The field is editable when the bridge runs elsewhere."
         }
       },
       "reauth_confirm": {

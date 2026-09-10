@@ -17,6 +17,8 @@ from .api import (
     OkamInvalidResponseError,
     normalize_bridge_url,
 )
+from .url import default_bridge_url, select_bridge_url
+
 from .const import (
     CONF_API_TOKEN,
     CONF_BRIDGE_URL,
@@ -31,7 +33,8 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-DEFAULT_BRIDGE_URL = "http://dc28dd67-okam-ha-proxy:8099"
+# Empty is the safe fallback when Home Assistant exposes no usable local URL.
+DEFAULT_BRIDGE_URL = ""
 from .identity import (
     CameraSelectionRequired,
     CameraAliasAmbiguous,
@@ -41,13 +44,18 @@ from .identity import (
 )
 
 
-def _schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+def _schema(
+    defaults: dict[str, Any] | None = None,
+    *,
+    detected_bridge_url: str = DEFAULT_BRIDGE_URL,
+) -> vol.Schema:
     defaults = defaults or {}
+    bridge_url = select_bridge_url(defaults, detected_bridge_url)
     return vol.Schema(
         {
             vol.Required(
                 CONF_BRIDGE_URL,
-                default=defaults.get(CONF_BRIDGE_URL, DEFAULT_BRIDGE_URL),
+                default=bridge_url,
             ): str,
             vol.Required(
                 CONF_API_TOKEN, default=defaults.get(CONF_API_TOKEN, "")
@@ -210,7 +218,12 @@ class OkamConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         errors={},
                     )
         return self.async_show_form(
-            step_id="user", data_schema=_schema(user_input), errors=errors
+            step_id="user",
+            data_schema=_schema(
+                user_input,
+                detected_bridge_url=default_bridge_url(self.hass),
+            ),
+            errors=errors
         )
 
     async def async_step_camera(self, user_input=None):
