@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import os
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -28,6 +29,33 @@ MAX_RESPONSE_BYTES = 64 * 1024
 MAX_FIELD_BYTES = 4096
 VIRTUAL_ID_PATTERN = re.compile(r"^[A-Za-z]+\d{7,}.*[A-Za-z]$")
 DEFAULT_CAMERA_PASSWORD = "888888"
+MEDIA_PIPE_ENV = "OKAM_AUDIO_FD"
+TALKBACK_PIPE_ENV = "OKAM_TALKBACK_FD"
+AUDIO_FRAME_MAGIC = b"OKA1"
+TALKBACK_FRAME_MAGIC = b"OKT1"
+MAX_AUDIO_FRAME_BYTES = 4096
+
+
+def encode_audio_frame(payload: bytes) -> bytes:
+    """Length framed PCMA sample for the parent media pump."""
+    if not 0 < len(payload) <= MAX_AUDIO_FRAME_BYTES:
+        raise ValueError("audio frame is out of bounds")
+    return AUDIO_FRAME_MAGIC + struct.pack(">I", len(payload)) + payload
+
+
+def decode_audio_header(header: bytes) -> int:
+    if len(header) != 8 or header[:4] != AUDIO_FRAME_MAGIC:
+        raise P2PError("native audio framing is invalid")
+    size = struct.unpack(">I", header[4:])[0]
+    if not 0 < size <= MAX_AUDIO_FRAME_BYTES:
+        raise P2PError("native audio frame is invalid")
+    return size
+
+
+def encode_talkback_frame(payload: bytes) -> bytes:
+    if not 0 < len(payload) <= MAX_AUDIO_FRAME_BYTES:
+        raise ValueError("talkback frame is out of bounds")
+    return TALKBACK_FRAME_MAGIC + struct.pack(">I", len(payload)) + payload
 _HELPER_STDERR_BYTES = 4096
 _SECRET_TEXT = re.compile(r"(?i)(password|token|secret|authorization)(\s*[=:]\s*)([^\s,;]+)")
 
@@ -690,6 +718,13 @@ def open_stream_process(
     _log_ipc_write(device_password, environment, uid)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
+        audio_read, audio_write = os.pipe()
+        talkback_read, talkback_write = os.pipe()
+        os.set_inheritable(audio_write, True)
+        os.set_inheritable(talkback_read, True)
+        child_environment = dict(environment)
+        child_environment[MEDIA_PIPE_ENV] = str(audio_write)
+        child_environment[TALKBACK_PIPE_ENV] = str(talkback_read)
         command = [helper, library, "--stream-stdout"]
         if credential_index is not None:
             command.extend(("--credential-index", str(credential_index)))
@@ -698,7 +733,8 @@ def open_stream_process(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=environment,
+            env=child_environment,
+            pass_fds=(audio_write, talkback_read),
             bufsize=0,
         )
         assert process.stdin is not None
@@ -707,8 +743,16 @@ def open_stream_process(
         process.stdin.write(stdin)
         process.stdin.close()
         process.stdin = None
+        os.close(audio_write)
+        os.close(talkback_read)
+        process.okam_audio = os.fdopen(audio_read, "rb", buffering=0)
+        process.okam_talkback = os.fdopen(talkback_write, "wb", buffering=0)
         return process
     except (OSError, subprocess.SubprocessError):
+        for fd in (locals().get("audio_read"), locals().get("audio_write"), locals().get("talkback_read"), locals().get("talkback_write")):
+            if isinstance(fd, int):
+                try: os.close(fd)
+                except OSError: pass
         if "process" in locals() and process.poll() is None:
             process.kill()
             _reap_after_kill(process)
@@ -732,19 +776,31 @@ def open_authenticated_stream_process(
     _log_ipc_write(device_password, environment, uid)
     stdin = _field(uid) + _field(service_parameter) + _field(device_password, allow_empty=True)
     try:
+        audio_read, audio_write = os.pipe()
+        talkback_read, talkback_write = os.pipe()
+        os.set_inheritable(audio_write, True)
+        os.set_inheritable(talkback_read, True)
+        child_environment = dict(environment)
+        child_environment[MEDIA_PIPE_ENV] = str(audio_write)
+        child_environment[TALKBACK_PIPE_ENV] = str(talkback_read)
         command = [helper, library, "--stream-stdout", "--credential-index", str(credential_index)]
         process = subprocess.Popen(
             command,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            env=environment,
+            env=child_environment,
+            pass_fds=(audio_write, talkback_read),
             bufsize=0,
         )
         assert process.stdin is not None and process.stderr is not None
         process.stdin.write(stdin)
         process.stdin.close()
         process.stdin = None
+        os.close(audio_write)
+        os.close(talkback_read)
+        process.okam_audio = os.fdopen(audio_read, "rb", buffering=0)
+        process.okam_talkback = os.fdopen(talkback_write, "wb", buffering=0)
         events: queue.Queue[dict[str, object] | None] = queue.Queue(maxsize=1)
         stderr_capture = bytearray()
 
@@ -826,6 +882,10 @@ def open_authenticated_stream_process(
             return result, process
         return result, process
     except P2PError:
+        for fd in (locals().get("audio_read"), locals().get("audio_write"), locals().get("talkback_read"), locals().get("talkback_write")):
+            if isinstance(fd, int):
+                try: os.close(fd)
+                except OSError: pass
         if "process" in locals() and process.poll() is None:
             process.kill()
             _reap_after_kill(process)

@@ -8,6 +8,7 @@ import signal
 import struct
 import sys
 import time
+import threading
 
 from .cs2 import (
     LIVE_STREAM_RESPONSE_COMMANDS,
@@ -23,16 +24,69 @@ from .cs2 import (
     read_video_frame,
     write_command,
 )
+from .p2p import encode_audio_frame
 from .logging import PROCESS_ID, timestamped_print
 
 
 # The live-start acknowledgement is read before the first media read so it is
 # recorded as evidence instead of sitting unclaimed in the channel-0 buffer.
 LIVE_START_RESPONSE_SECONDS = 10.0
+AUDIO_START_RESPONSE_SECONDS = 10.0
+AUDIO_FRAME_BYTES = 640
 
 
 _running = True
 _diagnostic_started = time.monotonic()
+
+
+def _audio_fd() -> int | None:
+    try:
+        value = int(os.environ.get("OKAM_AUDIO_FD", ""))
+        return value if value >= 0 else None
+    except ValueError:
+        return None
+
+
+def _write_audio(fd: int | None, payload: bytes) -> None:
+    if fd is None or not payload:
+        return
+    try:
+        os.write(fd, encode_audio_frame(payload))
+    except (BlockingIOError, BrokenPipeError, OSError):
+        pass
+
+
+def _talkback_loop(session: CS2Session) -> None:
+    """Forward framed PCMA from the RTSP parent to native channel 3."""
+    try:
+        fd = int(os.environ.get("OKAM_TALKBACK_FD", ""))
+    except ValueError:
+        return
+    buffer = bytearray()
+    try:
+        while _running:
+            chunk = os.read(fd, 8192)
+            if not chunk:
+                return
+            buffer.extend(chunk)
+            while len(buffer) >= 8:
+                if buffer[:4] != b"OKT1":
+                    del buffer[:1]
+                    continue
+                size = int.from_bytes(buffer[4:8], "big")
+                if not 0 < size <= 4096:
+                    del buffer[:4]
+                    continue
+                if len(buffer) < 8 + size:
+                    break
+                payload = bytes(buffer[8:8 + size])
+                del buffer[:8 + size]
+                for offset in range(0, len(payload), AUDIO_FRAME_BYTES):
+                    frame = payload[offset:offset + AUDIO_FRAME_BYTES]
+                    if len(frame) == AUDIO_FRAME_BYTES:
+                        session.write(3, frame, timeout=2.0)
+    except (OSError, CS2Error):
+        return
 
 
 def _diag(event: str, **fields: object) -> None:
@@ -151,6 +205,9 @@ def run(
     accepted_password = device_password or ""
     stdout_chunks = 0
     native_video_packets = 0
+    audio_fd = _audio_fd()
+    if audio_fd is not None:
+        os.set_blocking(audio_fd, False)
     if mode != "connect":
         if _debug_credentials_enabled():
             timestamped_print(_credential_debug_line("native_login_input", accepted_password, uid), file=sys.stderr, flush=True)
@@ -246,10 +303,24 @@ def run(
         )
         if answer is not None:
             result.update(stream_start_command=answer[0], stream_start_result=answer[1])
+        # Audio is a separate CGI lifecycle on the same authenticated native
+        # session. It is never sent while the process is in standby.
+        if mode == "stream-stdout":
+            write_command(
+                session,
+                make_cgi_request("audiostream.cgi?streamid=7&", accepted_user, accepted_password),
+            )
+            threading.Thread(target=_talkback_loop, args=(session,), daemon=True).start()
         signal.signal(signal.SIGINT, _stop)
         signal.signal(signal.SIGTERM, _stop)
         while _running:
             payload, frame_type = read_video_frame(session, timeout=45.0)
+            if frame_type == 0x0C:
+                # The observed camera framing is PCMA, 16 kHz mono, 640-byte
+                # payloads at roughly 40 ms. Keep H264 stdout untouched.
+                if len(payload) == AUDIO_FRAME_BYTES:
+                    _write_audio(audio_fd, payload)
+                continue
             native_video_packets += 1
             if native_video_packets == 1:
                 _diag("first_native_video_packet", bytes=len(payload), frame_type=frame_type)
@@ -298,6 +369,14 @@ def run(
             ),
         )
         result["stream_stop_sent"] = True
+        if mode == "stream-stdout":
+            try:
+                write_command(
+                    session,
+                    make_cgi_request("audiostream.cgi?streamid=16&", accepted_user, accepted_password),
+                )
+            except CS2Error:
+                pass
         result["disconnected"] = session.close()
         ok = bool(result["h264_received"]) and bool(result["stream_stop_sent"])
         return _finish(session, result, 0 if ok else 6)

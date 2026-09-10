@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.0-rc3
+
+- Added native camera audio (PCMA/16000/1) to RTSP and RTSP backchannel talk.
+- Physical camera validation is still required.
+
 ## 2.0.0-rc2
 
 - Reconnects an affected RTSP client once when a battery-camera standby/live

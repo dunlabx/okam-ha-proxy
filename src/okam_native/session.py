@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
-from .p2p import MAX_RESPONSE_BYTES, P2PError, _jpeg_dimensions
+from .p2p import MAX_RESPONSE_BYTES, P2PError, _jpeg_dimensions, decode_audio_header, encode_talkback_frame
 from .logging import PROCESS_ID
 
 
@@ -41,15 +41,25 @@ class StreamSubscription:
         owner: "NativeStreamSession",
         subscription_id: str,
         chunks: queue.Queue[bytes | object],
+        audio_chunks: queue.Queue[bytes | object],
     ) -> None:
         self._owner = owner
         self._subscription_id = subscription_id
         self._chunks = chunks
+        self._audio_chunks = audio_chunks
         self._closed = False
 
     def __iter__(self) -> Iterator[bytes]:
         while not self._closed:
             chunk = self._chunks.get()
+            if chunk is _END:
+                return
+            assert isinstance(chunk, bytes)
+            yield chunk
+
+    def iter_audio(self) -> Iterator[bytes]:
+        while not self._closed:
+            chunk = self._audio_chunks.get()
             if chunk is _END:
                 return
             assert isinstance(chunk, bytes)
@@ -64,6 +74,14 @@ class StreamSubscription:
                 try:
                     self._chunks.get_nowait()
                     self._chunks.put_nowait(_END)
+                except (queue.Empty, queue.Full):
+                    pass
+            try:
+                self._audio_chunks.put_nowait(_END)
+            except queue.Full:
+                try:
+                    self._audio_chunks.get_nowait()
+                    self._audio_chunks.put_nowait(_END)
                 except (queue.Empty, queue.Full):
                     pass
             self._owner.release(self._subscription_id)
@@ -110,6 +128,8 @@ class NativeStreamSession:
         self._cleanup_complete = threading.Event()
         self._cleanup_complete.set()
         self._subscribers: dict[str, tuple[queue.Queue[bytes | object], bool]] = {}
+        self._audio_subscribers: dict[str, queue.Queue[bytes | object]] = {}
+        self._talkback_lock = threading.Lock()
         self._idle_timer: threading.Timer | None = None
         self._stderr = bytearray()
         self._clean_disconnect: bool | None = None
@@ -252,6 +272,7 @@ class NativeStreamSession:
     def release(self, subscription_id: str) -> None:
         with self._lock:
             self._subscribers.pop(subscription_id, None)
+            self._audio_subscribers.pop(subscription_id, None)
             if (
                 not self._active_subscribers_locked()
                 and self._process is not None
@@ -272,16 +293,18 @@ class NativeStreamSession:
     def _subscribe_locked(self, *, passive: bool) -> StreamSubscription:
         subscription_id = uuid.uuid4().hex
         chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=32)
+        audio_chunks: queue.Queue[bytes | object] = queue.Queue(maxsize=64)
         preamble = self._preamble()
         if preamble:
             chunks.put_nowait(preamble)
         self._subscribers[subscription_id] = (chunks, passive)
+        self._audio_subscribers[subscription_id] = audio_chunks
         if passive and self._process is None:
             if self._state != "STARTING":
                 self._set_state_locked("STANDBY")
             self._put_chunk(chunks, self._standby_frame)
             self._ensure_standby_thread_locked()
-        return StreamSubscription(self, subscription_id, chunks)
+        return StreamSubscription(self, subscription_id, chunks, audio_chunks)
 
     def _subscribe_after_start(self, generation: int) -> StreamSubscription:
         with self._lock:
@@ -517,6 +540,23 @@ class NativeStreamSession:
         with self._lock:
             return self._media_generation
 
+    def send_talkback(self, payload: bytes) -> bool:
+        """Forward bounded PCMA payloads to the live native channel-3 writer."""
+        if not payload or len(payload) > 4096:
+            return False
+        with self._lock:
+            process = self._process
+            writer = getattr(process, "okam_talkback", None) if process else None
+            if process is None or process.poll() is not None or writer is None:
+                return False
+        try:
+            with self._talkback_lock:
+                writer.write(encode_talkback_frame(payload))
+                writer.flush()
+            return True
+        except (OSError, BrokenPipeError):
+            return False
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -535,8 +575,12 @@ class NativeStreamSession:
             if process is not None and process.poll() is None:
                 self._set_state_locked("STOPPING")
             subscribers = tuple(chunks for chunks, _passive in self._subscribers.values())
+            audio_subscribers = tuple(self._audio_subscribers.values())
             self._subscribers.clear()
+            self._audio_subscribers.clear()
         for chunks in subscribers:
+            self._put_chunk(chunks, _END)
+        for chunks in audio_subscribers:
             self._put_chunk(chunks, _END)
         self._terminate(process)
 
@@ -672,6 +716,13 @@ class NativeStreamSession:
                 args=(process, stderr_thread, generation, self._cleanup_complete),
                 daemon=True,
             ).start()
+            audio = getattr(process, "okam_audio", None)
+            if audio is not None:
+                threading.Thread(
+                    target=self._pump_audio,
+                    args=(audio, generation),
+                    daemon=True,
+                ).start()
             self._startup_condition.notify_all()
             return False
 
@@ -734,6 +785,11 @@ class NativeStreamSession:
                 active_subscribers = tuple(
                     chunks for chunks, passive in self._subscribers.values() if not passive
                 ) if current else ()
+                active_audio_subscribers = tuple(
+                    self._audio_subscribers[subscription_id]
+                    for subscription_id, (_chunks, passive) in self._subscribers.items()
+                    if not passive and subscription_id in self._audio_subscribers
+                ) if current else ()
                 if current:
                     for subscription_id, (_chunks, passive) in tuple(self._subscribers.items()):
                         if not passive:
@@ -757,6 +813,8 @@ class NativeStreamSession:
                     )
             for chunks in active_subscribers:
                 self._put_chunk(chunks, _END)
+            for chunks in active_audio_subscribers:
+                self._put_chunk(chunks, _END)
             with self._lock:
                 if self._subscribers:
                     self._ensure_standby_thread_locked()
@@ -772,6 +830,31 @@ class NativeStreamSession:
                 self._startup_condition.notify_all()
             if deferred is not None and not closed:
                 deferred()
+
+    def _pump_audio(self, audio: object, generation: int) -> None:
+        """Read framed PCMA from the helper without blocking video delivery."""
+        try:
+            while True:
+                header = audio.read(8)  # type: ignore[attr-defined]
+                if not header:
+                    return
+                size = decode_audio_header(header)
+                payload = audio.read(size)  # type: ignore[attr-defined]
+                if len(payload) != size:
+                    return
+                with self._lock:
+                    if self._process_generation != generation:
+                        return
+                    subscribers = tuple(self._audio_subscribers.values())
+                for chunks in subscribers:
+                    self._put_chunk(chunks, payload)
+        except (OSError, P2PError):
+            return
+        finally:
+            try:
+                audio.close()  # type: ignore[attr-defined]
+            except OSError:
+                pass
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         assert process.stderr is not None
@@ -885,17 +968,25 @@ class NativeStreamSession:
         self._media_ready = False
 
     def _terminate(self, process: subprocess.Popen[bytes] | None) -> None:
-        if process is None or process.poll() is not None:
+        if process is None:
             return
-        process.terminate()
-        try:
-            process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        if process.poll() is None:
+            process.terminate()
             try:
-                process.wait(timeout=5)
+                process.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self._emit(
-                    "native_process_reap_timeout "
-                    f"process_pid={getattr(process, 'pid', None) or '-'}"
-                )
+                process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._emit(
+                        "native_process_reap_timeout "
+                        f"process_pid={getattr(process, 'pid', None) or '-'}"
+                    )
+        for name in ("okam_audio", "okam_talkback"):
+            stream = getattr(process, name, None)
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass

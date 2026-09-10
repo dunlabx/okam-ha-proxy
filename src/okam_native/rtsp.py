@@ -22,7 +22,9 @@ from .p2p import P2PError
 
 
 RTP_PAYLOAD_TYPE = 96
+RTP_AUDIO_PAYLOAD_TYPE = 97
 RTP_CLOCK = 90_000
+AUDIO_CLOCK = 16_000
 MAX_RTP_PAYLOAD = 1_400
 FRAME_TICKS = 3_000  # stable fallback clock: 30 synthetic frames per second
 
@@ -253,12 +255,17 @@ def _sdp(bridge: CameraBridge, host: str, port: int) -> bytes:
         "a=rtpmap:96 H264/90000",
         "a=fmtp:96 packetization-mode=1;profile-level-id=42e01f",
         "a=control:trackID=0",
+        "m=audio 0 RTP/AVP 97",
+        "c=IN IP4 0.0.0.0",
+        "a=rtpmap:97 PCMA/16000/1",
+        "a=control:trackID=1",
+        "a=sendrecv",
     ]
     if len(sps) >= 4 and len(pps) >= 4:
         sps_payload = sps[4:] if sps[:4] == b"\x00\x00\x00\x01" else sps[3:]
         pps_payload = pps[4:] if pps[:4] == b"\x00\x00\x00\x01" else pps[3:]
         profile = sps_payload[1:4].hex() if len(sps_payload) >= 4 else "42e01f"
-        attrs[-2] = (
+        attrs[8] = (
             "a=fmtp:96 packetization-mode=1;"
             f"profile-level-id={profile};"
             f"sprop-parameter-sets={base64.b64encode(sps_payload).decode()},"
@@ -279,6 +286,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._write_lock = threading.Lock()
         self._stream_thread: threading.Thread | None = None
         self._rtp_channel = 0
+        self._track_channels: dict[int, int] = {}
         self._diagnostic_started = time.monotonic()
         self._diagnostic_camera: CameraBridge | None = None
         self._rtsp_bytes = 0
@@ -323,7 +331,10 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                         length = int.from_bytes(buffer[2:4], "big")
                         if len(buffer) < 4 + length:
                             break
+                        channel = buffer[1]
+                        payload = bytes(buffer[4 : 4 + length])
                         del buffer[: 4 + length]
+                        self._handle_interleaved(channel, payload)
                         continue
                     marker = buffer.find(b"\r\n\r\n")
                     if marker < 0:
@@ -372,6 +383,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             return True
         if method == "SETUP":
             transport = headers.get("transport", "")
+            channel = self._rtp_channel
             if "RTP/AVP/TCP" not in transport.upper():
                 self._reply(461, cseq)
                 return True
@@ -381,13 +393,16 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                 if channel > 255 or int(match.group(2)) > 255:
                     self._reply(461, cseq)
                     return True
-                self._rtp_channel = channel
+                track = 1 if re.search(r"trackID=1|audioback", target, re.I) else 0
+                self._track_channels[track] = channel
+                if track == 0:
+                    self._rtp_channel = channel
             self._bridge = bridge
             self._reply(
                 200,
                 cseq,
                 {
-                    "Transport": f"RTP/AVP/TCP;unicast;interleaved={self._rtp_channel}-{self._rtp_channel + 1}",
+                    "Transport": f"RTP/AVP/TCP;unicast;interleaved={channel}-{channel + 1}",
                     "Session": self._session_id,
                 },
             )
@@ -408,6 +423,9 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             self._reply(200, cseq, {"Session": self._session_id, "RTP-Info": "url=trackID=0"})
             self._stream_thread = threading.Thread(target=self._stream, daemon=True)
             self._stream_thread.start()
+            if 1 in self._track_channels:
+                self._audio_thread = threading.Thread(target=self._stream_audio, daemon=True)
+                self._audio_thread.start()
             return True
         if method == "GET_PARAMETER":
             self._reply(200, cseq, {"Session": self._session_id})
@@ -418,6 +436,22 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             return False
         self._reply(501, cseq)
         return True
+
+    def _handle_interleaved(self, channel: int, packet: bytes) -> None:
+        """Forward go2rtc backchannel RTP payloads to native channel 3."""
+        if channel != self._track_channels.get(1) or len(packet) < 12:
+            return
+        header = 12 + (packet[0] & 0x0F) * 4
+        if packet[0] & 0x10:
+            if len(packet) < header + 4:
+                return
+            header += 4 + int.from_bytes(packet[header + 2 : header + 4], "big") * 4
+        if header > len(packet):
+            return
+        sender = getattr(getattr(self, "_bridge", None), "session", None)
+        send = getattr(sender, "send_talkback", None)
+        if callable(send):
+            send(packet[header:])
 
     def _reply(self, status: int, cseq: str, headers: dict[str, str] | None = None, body: bytes = b"") -> None:
         reason = {
@@ -507,6 +541,29 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
             pass
         finally:
             self._stop_stream.set()
+
+    def _stream_audio(self) -> None:
+        """Send queued PCMA frames on the negotiated audio interleaving."""
+        subscription = self._subscription
+        iterator = getattr(subscription, "iter_audio", None)
+        if not callable(iterator):
+            return
+        sequence = random.randrange(1 << 16)
+        timestamp = random.randrange(1 << 32)
+        ssrc = random.randrange(1 << 32)
+        channel = self._track_channels.get(1, self._rtp_channel + 2)
+        try:
+            for payload in iterator():
+                if self._stop_stream.is_set():
+                    return
+                header = bytes((0x80, RTP_AUDIO_PAYLOAD_TYPE)) + sequence.to_bytes(2, "big") + timestamp.to_bytes(4, "big") + ssrc.to_bytes(4, "big")
+                frame = bytes((0x24, channel)) + (len(header) + len(payload)).to_bytes(2, "big") + header + payload
+                with self._write_lock:
+                    self.request.sendall(frame)
+                sequence = (sequence + 1) & 0xFFFF
+                timestamp = (timestamp + len(payload)) & 0xFFFFFFFF
+        except (OSError, ConnectionError):
+            return
 
     def _send_access_unit(
         self, access_unit: list[bytes], sequence: int, timestamp: int, ssrc: int

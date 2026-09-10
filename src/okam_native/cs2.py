@@ -868,7 +868,7 @@ def authenticate_camera(
     raise CameraLoginRejected(tuple(attempts))
 
 
-def read_video_frame(session: CS2Session, *, timeout: float) -> tuple[bytes, int]:
+def read_media_frame(session: CS2Session, *, timeout: float) -> tuple[bytes, int]:
     header = session.read_exact(1, 32, timeout=timeout)
     if header[:4] != b"\x55\xaa\x15\xa8":
         raise CS2Error("camera video framing is invalid")
@@ -876,6 +876,11 @@ def read_video_frame(session: CS2Session, *, timeout: float) -> tuple[bytes, int
     if not 0 < length <= MAX_FRAME_BYTES:
         raise CS2Error("camera video frame is invalid")
     return session.read_exact(1, length, timeout=timeout), header[4]
+
+
+def read_video_frame(session: CS2Session, *, timeout: float) -> tuple[bytes, int]:
+    """Backward-compatible video reader; audio is filtered by callers."""
+    return read_media_frame(session, timeout=timeout)
 
 
 def inspect_h264(payload: bytes) -> tuple[bool, bool]:

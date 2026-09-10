@@ -250,7 +250,7 @@ delay** from `30` to `120`. The change is applied immediately.
 - Update the **integration** from HACS.
 - Restart Home Assistant after an integration update.
 
-The current unpublished candidate app and HACS integration version is `2.0.0-rc2`. Update the add-on
+The current unpublished candidate app and HACS integration version is `2.0.0-rc3`. Update the add-on
 and integration together for the session, ARP, and RTSP concurrency updates.
 
 ## Diagnostics

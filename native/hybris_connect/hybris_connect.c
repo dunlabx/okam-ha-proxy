@@ -11,6 +11,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <hybris/common/binding.h>
 #include <hybris/common/hooks.h>
@@ -21,6 +22,7 @@
 #define CONNECT_STATE_ONLINE 3
 #define COMMAND_CHANNEL 0
 #define VIDEO_CHANNEL 1
+#define TALKBACK_CHANNEL 3
 #define LOGIN_RESPONSE 24577U
 #define READ_TIMEOUT_MS 500
 #define LOGIN_TIMEOUT_SECONDS 35
@@ -34,12 +36,18 @@ typedef void *(*client_create_fn)(const char *, const char *);
 typedef int (*client_connect_fn)(void *, int, const char *, int);
 typedef bool (*client_login_fn)(void *, const char *, const char *);
 typedef bool (*client_write_cgi_fn)(void *, const char *, int);
+typedef bool (*client_write_fn)(void *, int, const void *, int, int);
 typedef int (*client_read_fn)(void *, int, void *, int, int, int *);
 typedef bool (*client_disconnect_fn)(void *);
 typedef void (*client_destroy_fn)(void *);
 
 static uintptr_t stack_guard;
 static volatile sig_atomic_t stream_running = 1;
+static int talkback_fd = -1;
+static void *talkback_client = NULL;
+static client_write_fn talkback_write = NULL;
+static pthread_t talkback_thread;
+static bool talkback_started = false;
 extern void __stack_chk_fail(void);
 
 static long long diagnostic_started_ms(void) {
@@ -345,6 +353,34 @@ static bool write_stdout(const unsigned char *payload, size_t size) {
     return true;
 }
 
+static void *forward_talkback(void *unused) {
+    (void)unused;
+    unsigned char header[8];
+    while (stream_running && talkback_fd >= 0 && talkback_write != NULL) {
+        ssize_t got = read(talkback_fd, header, sizeof(header));
+        if (got <= 0) break;
+        if (got != (ssize_t)sizeof(header) || memcmp(header, "OKT1", 4) != 0) continue;
+        uint32_t length = ((uint32_t)header[4] << 24) | ((uint32_t)header[5] << 16) |
+                          ((uint32_t)header[6] << 8) | header[7];
+        if (length == 0 || length > 4096) continue;
+        unsigned char *payload = malloc(length);
+        if (payload == NULL) break;
+        size_t offset = 0;
+        while (offset < length) {
+            ssize_t n = read(talkback_fd, payload + offset, length - offset);
+            if (n <= 0) { offset = 0; break; }
+            offset += (size_t)n;
+        }
+        if (offset == length) {
+            for (size_t pos = 0; pos + 640 <= length; pos += 640)
+                (void)talkback_write(talkback_client, TALKBACK_CHANNEL, payload + pos, 640, 2000);
+        }
+        memset(payload, 0, length);
+        free(payload);
+    }
+    return NULL;
+}
+
 static bool forward_h264_frames(client_read_fn client_read, void *client, const char *uid,
                                 unsigned int *frames, unsigned long long *bytes,
                                 bool *keyframe_seen, unsigned int *h265_frames) {
@@ -375,7 +411,17 @@ static bool forward_h264_frames(client_read_fn client_read, void *client, const 
                          packet_count, length);
                 diagnostic_event("native_video_packet_progress", uid, extra);
             }
-            if (header[4] == 0x10U || header[4] == 0x11U) {
+            if (header[4] == 0x0cU) {
+                int fd = atoi(getenv("OKAM_AUDIO_FD") != NULL ? getenv("OKAM_AUDIO_FD") : "-1");
+                if (fd >= 0 && length <= 4096) {
+                    unsigned char framed[8];
+                    memcpy(framed, "OKA1", 4);
+                    framed[4] = (unsigned char)(length >> 24); framed[5] = (unsigned char)(length >> 16);
+                    framed[6] = (unsigned char)(length >> 8); framed[7] = (unsigned char)length;
+                    (void)write(fd, framed, sizeof(framed));
+                    (void)write(fd, payload, length);
+                }
+            } else if (header[4] == 0x10U || header[4] == 0x11U) {
                 (*h265_frames)++;
             } else if (inspect_h264_payload(payload, length, keyframe_seen)) {
                 diagnostic_h264_units(payload, length, uid);
@@ -457,6 +503,7 @@ int main(int argc, char **argv) {
     client_login_fn client_login = (client_login_fn)android_dlsym(library, "client_login");
     client_write_cgi_fn client_write_cgi =
         (client_write_cgi_fn)android_dlsym(library, "client_write_cgi");
+    client_write_fn client_write = (client_write_fn)android_dlsym(library, "client_write");
     client_read_fn client_read = (client_read_fn)android_dlsym(library, "client_read");
     client_disconnect_fn client_disconnect =
         (client_disconnect_fn)android_dlsym(library, "client_disconnect");
@@ -560,9 +607,16 @@ int main(int argc, char **argv) {
             fflush(stderr);
         }
         if (connected && authenticated && live_mode) {
+            talkback_fd = atoi(getenv("OKAM_TALKBACK_FD") != NULL ? getenv("OKAM_TALKBACK_FD") : "-1");
+            talkback_client = client;
+            talkback_write = client_write;
+            if (talkback_fd >= 0 && talkback_write != NULL)
+                talkback_started = pthread_create(&talkback_thread, NULL, forward_talkback, NULL) == 0;
             diagnostic_event("livestream_command_begin", uid, "streamid=10 substream=2");
             stream_start_sent = client_write_cgi(
                 client, "livestream.cgi?streamid=10&substream=2&", 5000);
+            if (stream_start_sent)
+                (void)client_write_cgi(client, "audiostream.cgi?streamid=7&", 5000);
             diagnostic_event("livestream_command_sent", uid,
                              stream_start_sent ? "stream_start_sent=true" : "stream_start_sent=false");
             if (stream_start_sent) {
@@ -580,9 +634,17 @@ int main(int argc, char **argv) {
                 }
                 stream_stop_sent = client_write_cgi(
                     client, "livestream.cgi?streamid=16&substream=0&", 5000);
+                (void)client_write_cgi(
+                    client, "audiostream.cgi?streamid=16&", 5000);
             }
         }
         if (connected) disconnected = client_disconnect(client);
+        stream_running = 0;
+        if (talkback_fd >= 0) close(talkback_fd);
+        if (talkback_started) {
+            (void)pthread_cancel(talkback_thread);
+            (void)pthread_join(talkback_thread, NULL);
+        }
         client_destroy(client);
     }
     memset(uid, 0, strlen(uid));
