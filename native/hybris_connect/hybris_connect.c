@@ -31,6 +31,8 @@
 #define LOGIN_TIMEOUT_SECONDS 35
 #define STREAM_TIMEOUT_SECONDS 45
 #define VIDEO_HEADER_BYTES 32U
+#define TALKBACK_NATIVE_HEADER_BYTES 32U
+#define TALKBACK_NATIVE_FRAME_BYTES (TALKBACK_NATIVE_HEADER_BYTES + TALKBACK_CHUNK_BYTES)
 #define MAX_VIDEO_FRAME_BYTES (8U * 1024U * 1024U)
 #define MIN_H264_FRAMES 3U
 #define MIN_H264_BYTES 1024U
@@ -82,6 +84,16 @@ typedef struct {
 } talkback_diagnostics_t;
 
 static talkback_diagnostics_t talkback_diagnostics;
+static const unsigned char talkback_native_header[TALKBACK_NATIVE_HEADER_BYTES] = {
+    0x55, 0xaa, 0x15, 0xa8,
+    0x08, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x80, 0x02, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x07, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+};
 typedef struct {
     unsigned char payload[TALKBACK_CHUNK_BYTES];
 } talkback_chunk_t;
@@ -451,10 +463,19 @@ static void talkback_write_progress(void) {
 }
 
 static void talkback_write_one(const unsigned char *payload) {
+    unsigned char native_frame[TALKBACK_NATIVE_FRAME_BYTES];
+    memcpy(native_frame, talkback_native_header, TALKBACK_NATIVE_HEADER_BYTES);
+    memcpy(native_frame + TALKBACK_NATIVE_HEADER_BYTES, payload, TALKBACK_CHUNK_BYTES);
     long long started = diagnostic_started_ms();
     long long since_previous = talkback_diagnostics.previous_write_ms > 0 && started > 0
         ? started - talkback_diagnostics.previous_write_ms : -1;
-    bool write_result = talkback_write(talkback_client, TALKBACK_CHANNEL, payload, 640, 2000);
+    if (talkback_diagnostics.native_chunk_count == 0) {
+        diagnostic_event("native_talkback_native_frame_first", talkback_uid,
+                         "channel=3 native_header_bytes=32 audio_payload_bytes=640 "
+                         "client_write_bytes=672 native_type=8");
+    }
+    bool write_result = talkback_write(
+        talkback_client, TALKBACK_CHANNEL, native_frame, TALKBACK_NATIVE_FRAME_BYTES, 2000);
     long long finished = diagnostic_started_ms();
     long long call_elapsed = started > 0 && finished >= started ? finished - started : -1;
     talkback_diagnostics.previous_write_ms = finished;

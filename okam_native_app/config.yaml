@@ -1,5 +1,5 @@
 name: O-KAM HA Proxy
-version: 2.0.0-rc8-talkpace1
+version: 2.0.0-rc8-talkframe1
 slug: okam_ha_proxy
 description: Self-contained native O-KAM camera bridge for Home Assistant
 url: https://github.com/dunlabx/okam-ha-proxy

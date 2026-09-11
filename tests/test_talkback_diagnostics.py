@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import yaml
 
@@ -9,11 +10,17 @@ HELPER = ROOT / "native" / "hybris_connect" / "hybris_connect.c"
 
 def test_diagnostic_candidate_version_and_native_helper_scope():
     config = yaml.safe_load((ROOT / "okam_native_app" / "config.yaml").read_text())
-    assert config["version"] == "2.0.0-rc8-talkpace1"
+    assert config["version"] == "2.0.0-rc8-talkframe1"
 
     source = HELPER.read_text()
     assert "typedef bool (*client_write_fn)(void *, int, const void *, int, int);" in source
-    assert "bool write_result = talkback_write(talkback_client, TALKBACK_CHANNEL, payload, 640, 2000);" in source
+    assert "TALKBACK_NATIVE_HEADER_BYTES 32U" in source
+    assert "TALKBACK_NATIVE_FRAME_BYTES (TALKBACK_NATIVE_HEADER_BYTES + TALKBACK_CHUNK_BYTES)" in source
+    assert "0x55, 0xaa, 0x15, 0xa8" in source
+    assert "0x08, 0x01, 0x00, 0x00" in source
+    assert "memcpy(native_frame + TALKBACK_NATIVE_HEADER_BYTES, payload, TALKBACK_CHUNK_BYTES);" in source
+    assert "TALKBACK_CHANNEL, native_frame, TALKBACK_NATIVE_FRAME_BYTES, 2000" in source
+    assert "native_talkback_native_frame_first" in source
     assert "native_talkback_write_first_attempt" in source
     assert "native_talkback_write_first_success" in source
     assert "native_talkback_write_first_failure" in source
@@ -33,6 +40,40 @@ def test_diagnostic_candidate_version_and_native_helper_scope():
     assert "native_talkback_pacing_first" in source
     assert "native_talkback_pacing_progress" in source
     assert "native_talkback_pacing_overflow" in source
+
+
+def test_native_talk_frame_has_exact_official_header_and_audio_payload_contract():
+    source = HELPER.read_text()
+    match = re.search(
+        r"talkback_native_header\[TALKBACK_NATIVE_HEADER_BYTES\]\s*=\s*\{(.*?)\};",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+    actual = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", match.group(1)))
+    expected = bytes.fromhex(
+        "55aa15a80801000000000000800200000000000007000000"
+        "0000000000000000"
+    )
+    assert actual == expected
+    audio = bytes(range(256)) * 2 + bytes(range(128))
+    frame = actual + audio
+    assert len(audio) == 640
+    assert len(frame) == 672
+    assert frame[:32] == expected
+    assert frame[4] == 0x08
+    assert frame[32:] == audio
+
+    write_section = source[source.index("static void talkback_write_one") : source.index("static void talkback_queue_reset")]
+    assert "TALKBACK_CHANNEL, native_frame, TALKBACK_NATIVE_FRAME_BYTES, 2000" in write_section
+    assert "payload, 640, 2000" not in write_section
+
+
+def test_camera_to_client_audio_path_does_not_use_talk_frame_header():
+    source = HELPER.read_text()
+    receive_section = source[source.index("static bool forward_h264_frames") : source.index("int main")]
+    assert "talkback_native_header" not in receive_section
+    assert "header[4] == 0x0cU" in receive_section
 
 
 def test_diagnostic_segmentation_observes_existing_residual_discard():
@@ -66,7 +107,8 @@ def test_talkback_pacing_is_bounded_and_monotonic_without_changing_wire_contract
     assert "pthread_cond_signal(&talkback_queue.condition)" in source
     assert "pthread_cond_broadcast(&talkback_queue.condition)" in source
     assert "next_deadline += TALKBACK_PACING_INTERVAL_MS" in source
-    assert "TALKBACK_CHANNEL, payload, 640, 2000" in source
+    assert "TALKBACK_CHANNEL, native_frame, TALKBACK_NATIVE_FRAME_BYTES, 2000" in source
+    assert "TALKBACK_CHANNEL 3" in source
     assert "TALKBACK_CHUNK_BYTES <= length" in source
     assert "residual = length % 640" in source
     assert "discarded_residual_bytes_total += residual" in source
