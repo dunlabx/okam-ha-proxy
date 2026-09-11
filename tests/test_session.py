@@ -410,6 +410,32 @@ def test_session_diagnostics_identify_live_boundary_without_credentials() -> Non
     assert "password" not in diagnostics.lower()
 
 
+def test_native_helper_diagnostics_are_forwarded_and_stderr_is_filtered() -> None:
+    lines: list[str] = []
+    process = type("Process", (), {})()
+    process.stderr = BlockingPipe()
+    session = NativeStreamSession(lambda: FakeProcess(), logger=lines.append)
+    reader = threading.Thread(target=session._drain_stderr, args=(process,))
+    reader.start()
+    process.stderr.chunks.put(
+        b"ordinary helper warning\n"
+        b"native_diag event=native_talkback_write_first_attempt camera_uid=UID "
+        b"password=secret\n"
+        b"2026-09-11 12:00:00.000 +00:00 process_id=helper "
+        b"native_diag event=native_talkback_thread_started talkback_fd=7\n"
+    )
+    process.stderr.chunks.put(None)
+    reader.join(timeout=2)
+    assert not reader.is_alive()
+    forwarded = "\n".join(lines)
+    assert "native_helper_diag native_diag event=native_talkback_write_first_attempt" in forwarded
+    assert "native_helper_diag native_diag event=native_talkback_thread_started" in forwarded
+    assert "ordinary helper warning" not in forwarded
+    assert "password=<redacted>" in forwarded
+    assert "secret" not in forwarded
+    assert b"ordinary helper warning" in bytes(session._stderr)
+
+
 def test_transport_failure_returns_to_retryable_state_without_overlap() -> None:
     starts = []
     process = FakeProcess()

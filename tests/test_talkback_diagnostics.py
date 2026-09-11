@@ -9,7 +9,7 @@ HELPER = ROOT / "native" / "hybris_connect" / "hybris_connect.c"
 
 def test_diagnostic_candidate_version_and_native_helper_scope():
     config = yaml.safe_load((ROOT / "okam_native_app" / "config.yaml").read_text())
-    assert config["version"] == "2.0.0-rc8-talkdiag1"
+    assert config["version"] == "2.0.0-rc8-talkdiag2"
 
     source = HELPER.read_text()
     assert "typedef bool (*client_write_fn)(void *, int, const void *, int, int);" in source
@@ -26,6 +26,9 @@ def test_diagnostic_candidate_version_and_native_helper_scope():
     assert "malformed_header" in source
     assert "incomplete_payload" in source
     assert "invalid_declared_length" in source
+    assert "native_talkback_thread_started" in source
+    assert "native_talkback_thread_start_failure" in source
+    assert "client_write_resolved" in source
 
 
 def test_diagnostic_segmentation_observes_existing_residual_discard():

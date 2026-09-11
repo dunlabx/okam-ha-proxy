@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -22,6 +23,14 @@ ANNEX_B_START = b"\x00\x00\x01"
 # unparsable rather than buffered indefinitely.
 MAX_PREAMBLE_BYTES = 1024 * 1024
 MAX_SCAN_BYTES = 4 * 1024 * 1024
+_NATIVE_DIAGNOSTIC_MAX_LINE_BYTES = 4096
+_NATIVE_DIAGNOSTIC_LINE = re.compile(
+    r"^native_diag event=[A-Za-z0-9_]+(?: .*)?$"
+)
+_NATIVE_DIAGNOSTIC_PREFIX = "native_diag event="
+_SECRET_TEXT = re.compile(
+    r"(?i)(password|token|secret|authorization)(\s*[=:]\s*)([^\s,;]+)"
+)
 
 
 @dataclass(frozen=True)
@@ -894,14 +903,56 @@ class NativeStreamSession:
 
     def _drain_stderr(self, process: subprocess.Popen[bytes]) -> None:
         assert process.stderr is not None
+        pending = bytearray()
+        discard_line = False
         while True:
             chunk = process.stderr.read(4096)
             if not chunk:
+                if pending and not discard_line:
+                    self._forward_native_diagnostic(bytes(pending))
                 return
             with self._lock:
                 remaining = MAX_RESPONSE_BYTES - len(self._stderr)
                 if remaining > 0:
                     self._stderr.extend(chunk[:remaining])
+            if discard_line:
+                newline = chunk.find(b"\n")
+                if newline < 0:
+                    continue
+                discard_line = False
+                chunk = chunk[newline + 1 :]
+            pending.extend(chunk)
+            while True:
+                try:
+                    newline = pending.index(0x0A)
+                except ValueError:
+                    break
+                line = bytes(pending[:newline]).rstrip(b"\r")
+                del pending[: newline + 1]
+                if len(line) <= _NATIVE_DIAGNOSTIC_MAX_LINE_BYTES:
+                    self._forward_native_diagnostic(line)
+            if len(pending) > _NATIVE_DIAGNOSTIC_MAX_LINE_BYTES:
+                pending.clear()
+                discard_line = True
+
+    def _forward_native_diagnostic(self, line: bytes) -> None:
+        """Forward only structured native diagnostics, never arbitrary stderr."""
+        try:
+            text = line.decode("utf-8", errors="replace")
+        except (UnicodeError, AttributeError):
+            return
+        marker = text.find(_NATIVE_DIAGNOSTIC_PREFIX)
+        if marker < 0:
+            return
+        prefix = text[:marker]
+        if prefix and not re.search(r"(?:^| )process_id=[^\s]+ $", prefix):
+            return
+        diagnostic = text[marker:]
+        if _NATIVE_DIAGNOSTIC_LINE.fullmatch(diagnostic) is None:
+            return
+        diagnostic = _SECRET_TEXT.sub(r"\1\2<redacted>", diagnostic)
+        diagnostic = diagnostic.replace("\x00", "?")[:4096]
+        self._emit("native_helper_diag " + diagnostic)
 
     def _parse_summary_locked(self, returncode: int) -> None:
         payload = None

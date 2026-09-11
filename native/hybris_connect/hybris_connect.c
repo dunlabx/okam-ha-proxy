@@ -833,8 +833,29 @@ int main(int argc, char **argv) {
             talkback_connect_state = state;
             talkback_authenticated = authenticated;
             memset(&talkback_diagnostics, 0, sizeof(talkback_diagnostics));
-            if (talkback_fd >= 0 && talkback_write != NULL)
-                talkback_started = pthread_create(&talkback_thread, NULL, forward_talkback, NULL) == 0;
+            {
+                bool talkback_fd_valid = talkback_fd >= 0;
+                bool client_write_resolved = talkback_write != NULL;
+                int thread_result = -1;
+                if (talkback_fd_valid && client_write_resolved) {
+                    thread_result = pthread_create(&talkback_thread, NULL, forward_talkback, NULL);
+                    talkback_started = thread_result == 0;
+                }
+                {
+                    char extra[256];
+                    snprintf(extra, sizeof(extra),
+                             "talkback_fd=%d talkback_fd_valid=%s client_write_resolved=%s "
+                             "connected=%s authenticated=%s live_mode=true pthread_result=%d",
+                             talkback_fd, talkback_fd_valid ? "true" : "false",
+                             client_write_resolved ? "true" : "false",
+                             connected ? "true" : "false",
+                             authenticated ? "true" : "false", thread_result);
+                    diagnostic_event(
+                        talkback_started ? "native_talkback_thread_started"
+                                         : "native_talkback_thread_start_failure",
+                        talkback_uid, extra);
+                }
+            }
             diagnostic_event("livestream_command_begin", uid, "streamid=10 substream=2");
             stream_start_sent = client_write_cgi(
                 client, "livestream.cgi?streamid=10&substream=2&", 5000);
