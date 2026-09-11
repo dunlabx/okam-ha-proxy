@@ -10,10 +10,15 @@ from okam_native.p2p import decode_audio_header, encode_audio_frame, encode_talk
 from okam_native.bridge import BridgeRegistry, CameraBridge
 from okam_native.rtsp import (
     AUDIO_CLOCK,
+    BACKCHANNEL_AUDIO_CLOCK,
     RTP_AUDIO_PAYLOAD_TYPE,
     RTSP_AUDIO_COMPATIBILITY_MODES,
     RTSP_BACKCHANNEL_MODES,
+    _PCMA8To16,
     _RTSPHandler,
+    _pcma_decode,
+    _pcma_encode,
+    _rtp_payload,
     _sdp,
 )
 from okam_native.session import NativeStreamSession, SessionStatus
@@ -50,9 +55,11 @@ def test_backchannel_sdp_is_separate_sendonly_track_and_require_gated():
 
     for mode in RTSP_BACKCHANNEL_MODES:
         body = _sdp(Bridge(), "127.0.0.1", 8100, "auto_recvonly", mode, True)
-        advertised = b"a=rtpmap:98 PCMA/16000/1" in body
+        advertised = b"a=rtpmap:98 PCMA/8000/1" in body
         assert advertised is (mode != "off")
         if advertised:
+            backchannel = body.split(b"m=audio", 2)[2]
+            assert b"PCMA/16000/1" not in backchannel
             assert b"a=sendonly" in body
             assert b"a=control:audioback" in body or b"a=control:trackID=2" in body
 
@@ -75,11 +82,261 @@ def test_backchannel_rtp_routes_only_negotiated_track_to_talkback():
     handler._backchannel_packets = 0
     handler._backchannel_bytes = 0
     handler._diagnostic = lambda *_args, **_kwargs: None
-    payload = b"audio"
+    payload = bytes([_pcma_encode(1200)]) * 160
     rtp = b"\x80\x60" + b"\x00" * 10 + payload
     handler._handle_interleaved(2, rtp)
     handler._handle_interleaved(4, rtp)
-    assert handler._bridge.session.payloads == [payload]
+    assert len(handler._bridge.session.payloads) == 1
+    assert len(handler._bridge.session.payloads[0]) == 320
+    assert handler._bridge.session.payloads[0] != payload
+
+
+def test_pcma_8k_to_16k_preserves_20ms_duration_and_signal():
+    converter = _PCMA8To16()
+    source = bytes([_pcma_encode(8_000 if index % 8 < 4 else -8_000) for index in range(160)])
+    converted = converter.convert(source)
+    assert len(converted) == 320
+    decoded = [_pcma_decode(value) for value in converted]
+    assert max(decoded) > 4_000
+    assert min(decoded) < -4_000
+
+
+def test_pcma_8k_to_16k_preserves_40ms_duration():
+    converter = _PCMA8To16()
+    source = bytes([_pcma_encode(index * 80 - 12_000) for index in range(320)])
+    converted = converter.convert(source)
+    assert len(converted) == 640
+    assert len([_pcma_decode(value) for value in converted]) == 640
+
+
+def test_pcma_converter_keeps_state_across_rtp_packets():
+    converter = _PCMA8To16()
+    first = bytes([_pcma_encode(1_000 + index * 10) for index in range(160)])
+    second = bytes([_pcma_encode(8_000 + index * 10) for index in range(160)])
+    first_out = converter.convert(first)
+    second_out = converter.convert(second)
+    assert len(first_out) == len(second_out) == 320
+    boundary = [_pcma_decode(value) for value in second_out[:2]]
+    assert 2_000 < boundary[0] < 8_000
+    assert boundary[1] > boundary[0]
+
+
+def test_go2rtc_backchannel_codec_match_requires_clock_rate():
+    def matches(
+        producer: tuple[str, str, str, int], consumer: tuple[str, str, str, int]
+    ) -> bool:
+        producer_kind, producer_direction, producer_name, producer_clock = producer
+        consumer_kind, consumer_direction, consumer_name, consumer_clock = consumer
+        return (
+            producer_kind == consumer_kind
+            and producer_direction == "sendonly"
+            and consumer_direction == "recvonly"
+            and producer_name == consumer_name
+            and (producer_clock == consumer_clock or consumer_clock == 0)
+        )
+
+    browser_pcma = ("audio", "recvonly", "PCMA", 8_000)
+    assert matches(("audio", "sendonly", "PCMA", BACKCHANNEL_AUDIO_CLOCK), browser_pcma)
+    assert not matches(("audio", "sendonly", "PCMA", 16_000), browser_pcma)
+    assert not matches(("audio", "recvonly", "PCMA", 8_000), browser_pcma)
+    assert not matches(("audio", "sendonly", "OPUS", 8_000), browser_pcma)
+
+
+def test_rtp_payload_parser_rejects_malformed_packets():
+    assert _rtp_payload(b"\x80" * 11)[0] is None
+    assert _rtp_payload(b"\x40" + b"\x00" * 11 + b"x")[0] is None
+    assert _rtp_payload(b"\x80" + b"\x00" * 11)[0] is None
+    assert _rtp_payload(b"\x80" + b"\x00" * 11 + b"\x00")[0] == b"\x00"
+
+
+def test_backchannel_rtp_drops_wrong_channel_and_malformed_packets():
+    class Session:
+        def __init__(self):
+            self.payloads = []
+
+        def send_talkback(self, payload):
+            self.payloads.append(payload)
+            return True
+
+    class Bridge:
+        session = Session()
+
+    events = []
+    handler = object.__new__(_RTSPHandler)
+    handler._track_channels = {2: 4}
+    handler._bridge = Bridge()
+    handler._diagnostic = lambda event, **fields: events.append((event, fields))
+    handler._handle_interleaved(2, b"\x80" + b"\x00" * 11 + b"x")
+    handler._handle_interleaved(4, b"\x40" + b"\x00" * 11 + b"x")
+    assert handler._bridge.session.payloads == []
+    assert events and events[0][0] == "rtsp_backchannel_drop"
+
+
+def test_backchannel_rtp_routes_converted_audio_to_native_boundary():
+    class Session:
+        def __init__(self):
+            self.payloads = []
+
+        def send_talkback(self, payload):
+            self.payloads.append(payload)
+            return True
+
+    class Bridge:
+        session = Session()
+
+    handler = object.__new__(_RTSPHandler)
+    handler._track_channels = {2: 4}
+    handler._bridge = Bridge()
+    handler._backchannel_packets = 0
+    handler._backchannel_bytes = 0
+    handler._diagnostic = lambda *_args, **_kwargs: None
+    payload = bytes([_pcma_encode(4_000)]) * 160
+    packet = b"\x80\x60" + b"\x00" * 10 + payload
+    handler._handle_interleaved(4, packet)
+    assert len(handler._bridge.session.payloads) == 1
+    assert len(handler._bridge.session.payloads[0]) == 320
+
+
+def test_rtsp_backchannel_negotiation_keeps_reverse_track_separate():
+    class Subscription:
+        def __iter__(self):
+            return iter(())
+
+        def iter_audio(self):
+            return iter(())
+
+        def close(self):
+            pass
+
+    class Session:
+        def parameter_sets(self):
+            return b"", b""
+
+        def acquire(self, **_kwargs):
+            return Subscription()
+
+    class Request:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    class ImmediateThread:
+        def __init__(self, target, daemon=True):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+    class Bridge:
+        camera_uid = "UID_TALK"
+        camera_id = "UID_TALK"
+        battery_camera = False
+        session = Session()
+
+    class Registry:
+        def get(self, identifier):
+            return Bridge() if identifier == "UID_TALK" else None
+
+    server = type("Server", (), {
+        "registry": Registry(),
+        "host": "127.0.0.1",
+        "port": 8100,
+        "audio_compatibility_mode": "auto_recvonly",
+        "backchannel_mode": "onvif_require_audioback",
+    })()
+    handler = object.__new__(_RTSPHandler)
+    handler.server = server
+    handler.request = Request()
+    handler._session_id = "session"
+    handler._bridge = None
+    handler._subscription = None
+    handler._stop_stream = threading.Event()
+    handler._write_lock = threading.Lock()
+    handler._stream_thread = None
+    handler._audio_thread = None
+    handler._rtp_channel = 0
+    handler._track_channels = {}
+    handler._diagnostic_started = 0.0
+    handler._diagnostic_camera = None
+    handler._media_generation = None
+    handler._sdp_mode_logged = False
+    handler._diagnostic = lambda *_args, **_kwargs: None
+    handler._stream = lambda: None
+    handler._stream_audio = lambda: None
+
+    old_thread = threading.Thread
+    threading.Thread = ImmediateThread
+    try:
+        assert handler._handle_request(
+            b"DESCRIBE rtsp://127.0.0.1/UID_TALK RTSP/1.0\r\n"
+            b"CSeq: 1\r\nRequire: www.onvif.org/ver20/backchannel\r\n\r\n"
+        )
+        body = handler.request.sent[-1].split(b"\r\n\r\n", 1)[1]
+        assert b"a=rtpmap:97 PCMA/16000/1" in body
+        assert b"a=rtpmap:98 PCMA/8000/1" in body
+        assert b"a=control:audioback" in body
+        for cseq, target, channels in (
+            (2, b"trackID=0", b"0-1"),
+            (3, b"trackID=1", b"2-3"),
+            (4, b"audioback", b"4-5"),
+        ):
+            assert handler._handle_request(
+                b"SETUP rtsp://127.0.0.1/UID_TALK/" + target + b" RTSP/1.0\r\n"
+                + b"CSeq: " + str(cseq).encode() + b"\r\n"
+                + b"Transport: RTP/AVP/TCP;unicast;interleaved=" + channels + b"\r\n\r\n"
+            )
+        assert handler._track_channels == {0: 0, 1: 2, 2: 4}
+        assert handler._handle_request(
+            b"PLAY rtsp://127.0.0.1/UID_TALK RTSP/1.0\r\nCSeq: 5\r\n\r\n"
+        )
+    finally:
+        threading.Thread = old_thread
+        handler._stop_stream.set()
+
+
+def test_receive_audio_and_backchannel_use_independent_paths():
+    class Subscription:
+        def iter_audio(self):
+            yield b"r" * 320
+
+    class Session:
+        def __init__(self):
+            self.talkback = []
+
+        def send_talkback(self, payload):
+            self.talkback.append(payload)
+            return True
+
+    class Request:
+        def __init__(self):
+            self.frames = []
+
+        def sendall(self, payload):
+            self.frames.append(payload)
+
+    class Bridge:
+        session = Session()
+
+    handler = object.__new__(_RTSPHandler)
+    handler._subscription = Subscription()
+    handler._bridge = Bridge()
+    handler.request = Request()
+    handler._stop_stream = threading.Event()
+    handler._write_lock = threading.Lock()
+    handler._track_channels = {1: 2, 2: 4}
+    handler._rtp_channel = 0
+    handler._audio_packets = 0
+    handler._audio_bytes = 0
+    handler._backchannel_packets = 0
+    handler._backchannel_bytes = 0
+    handler._diagnostic = lambda *_args, **_kwargs: None
+    handler._stream_audio()
+    handler._handle_interleaved(4, b"\x80\x60" + b"\x00" * 10 + bytes([_pcma_encode(2_000)]) * 160)
+    assert handler.request.frames[0][1] == 2
+    assert len(handler._bridge.session.talkback) == 1
+    assert len(handler._bridge.session.talkback[0]) == 320
 
 
 @pytest.mark.parametrize("mode", RTSP_AUDIO_COMPATIBILITY_MODES)

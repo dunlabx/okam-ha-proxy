@@ -25,6 +25,7 @@ RTP_PAYLOAD_TYPE = 96
 RTP_AUDIO_PAYLOAD_TYPE = 97
 RTP_CLOCK = 90_000
 AUDIO_CLOCK = 16_000
+BACKCHANNEL_AUDIO_CLOCK = 8_000
 MAX_RTP_PAYLOAD = 1_400
 FRAME_TICKS = 3_000  # stable fallback clock: 30 synthetic frames per second
 
@@ -54,6 +55,102 @@ def _audio_compatibility_mode(value: object) -> str:
 def _backchannel_mode(value: object) -> str:
     mode = value if isinstance(value, str) else DEFAULT_RTSP_BACKCHANNEL_MODE
     return mode if mode in RTSP_BACKCHANNEL_MODES else DEFAULT_RTSP_BACKCHANNEL_MODE
+
+
+def _pcma_decode(sample: int) -> int:
+    """Decode one G.711 A-law byte into signed linear PCM."""
+
+    value = sample ^ 0x55
+    magnitude = (value & 0x0F) << 4
+    segment = (value & 0x70) >> 4
+    if segment == 0:
+        magnitude += 8
+    elif segment == 1:
+        magnitude += 0x108
+    else:
+        magnitude += 0x108
+        magnitude <<= segment - 1
+    return magnitude if value & 0x80 else -magnitude
+
+
+def _pcma_encode(sample: int) -> int:
+    """Encode signed linear PCM as one G.711 A-law byte."""
+
+    if sample >= 0:
+        mask = 0xD5
+    else:
+        mask = 0x55
+        sample = -sample - 1
+    sample = min(sample, 0x7FFF)
+    if sample >= 0x100:
+        segment = 1
+        limit = 0x200
+        while sample >= limit and segment < 8:
+            segment += 1
+            limit <<= 1
+        value = (segment << 4) | ((sample >> (segment + 3)) & 0x0F)
+    else:
+        value = sample >> 4
+    return value ^ mask
+
+
+class _PCMA8To16:
+    """Stateful in-process PCMA/8000 to PCMA/16000 converter."""
+
+    def __init__(self) -> None:
+        self._previous_sample: int | None = None
+
+    def convert(self, payload: bytes) -> bytes:
+        if not payload:
+            return b""
+
+        output = bytearray(len(payload) * 2)
+        offset = 0
+        previous = self._previous_sample
+        for encoded in payload:
+            current = _pcma_decode(encoded)
+            if previous is None:
+                # Prime the state with one sample while preserving the exact
+                # 2x duration of the first RTP packet.
+                first, second = current, current
+            else:
+                first, second = (previous + current) // 2, current
+            output[offset] = _pcma_encode(first)
+            output[offset + 1] = _pcma_encode(second)
+            offset += 2
+            previous = current
+        self._previous_sample = previous
+        return bytes(output)
+
+
+def _rtp_payload(packet: bytes) -> tuple[bytes | None, str | None]:
+    """Return an RTP payload, rejecting malformed headers and padding."""
+
+    if len(packet) < 12:
+        return None, "short_packet"
+    if packet[0] >> 6 != 2:
+        return None, "invalid_version"
+    header = 12 + (packet[0] & 0x0F) * 4
+    if len(packet) < header:
+        return None, "truncated_csrc"
+    if packet[0] & 0x10:
+        if len(packet) < header + 4:
+            return None, "truncated_extension"
+        extension_length = int.from_bytes(packet[header + 2 : header + 4], "big") * 4
+        header += 4 + extension_length
+        if len(packet) < header:
+            return None, "truncated_extension"
+    payload = packet[header:]
+    if packet[0] & 0x20:
+        if not payload:
+            return None, "invalid_padding"
+        padding = payload[-1]
+        if padding == 0 or padding > len(payload):
+            return None, "invalid_padding"
+        payload = payload[:-padding]
+    if not payload:
+        return None, "empty_payload"
+    return payload, None
 
 
 class _BitReader:
@@ -314,7 +411,7 @@ def _sdp(
         attrs.extend([
             "m=audio 0 RTP/AVP 98",
             "c=IN IP4 0.0.0.0",
-            "a=rtpmap:98 PCMA/16000/1",
+            "a=rtpmap:98 PCMA/8000/1",
             "a=sendonly",
             f"a=control:{control}",
         ])
@@ -357,6 +454,14 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
         self._sdp_mode_logged = False
         self._backchannel_packets = 0
         self._backchannel_bytes = 0
+        self._backchannel_incoming_packets = 0
+        self._backchannel_incoming_bytes = 0
+        self._backchannel_converted_packets = 0
+        self._backchannel_converted_input_bytes = 0
+        self._backchannel_converted_output_bytes = 0
+        self._backchannel_drop_count = 0
+        self._backchannel_wrong_channel_count = 0
+        self._backchannel_converter = _PCMA8To16()
 
     def _diagnostic(self, event: str, **fields: object) -> None:
         bridge = self._diagnostic_camera
@@ -466,7 +571,7 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
                     control=control,
                 )
                 self._sdp_mode_logged = True
-            advertised = b"a=sendonly" in body and b"a=rtpmap:98 PCMA/16000/1" in body
+            advertised = b"a=sendonly" in body and b"a=rtpmap:98 PCMA/8000/1" in body
             self._diagnostic(
                 "rtsp_backchannel_mode",
                 mode=_backchannel_mode(backchannel_mode),
@@ -542,24 +647,67 @@ class _RTSPHandler(socketserver.BaseRequestHandler):
 
     def _handle_interleaved(self, channel: int, packet: bytes) -> None:
         """Forward go2rtc backchannel RTP payloads to native channel 3."""
-        if channel != self._track_channels.get(2) or len(packet) < 12:
+        if channel != self._track_channels.get(2):
+            self._backchannel_wrong_channel_count = getattr(self, "_backchannel_wrong_channel_count", 0) + 1
+            self._backchannel_drop_count = getattr(self, "_backchannel_drop_count", 0) + 1
+            if self._backchannel_wrong_channel_count == 1 or self._backchannel_wrong_channel_count % 250 == 0:
+                self._diagnostic(
+                    "rtsp_backchannel_drop",
+                    reason="wrong_channel",
+                    wrong_channel_count=self._backchannel_wrong_channel_count,
+                    drop_count=self._backchannel_drop_count,
+                )
             return
-        header = 12 + (packet[0] & 0x0F) * 4
-        if packet[0] & 0x10:
-            if len(packet) < header + 4:
-                return
-            header += 4 + int.from_bytes(packet[header + 2 : header + 4], "big") * 4
-        if header > len(packet):
+        payload, reason = _rtp_payload(packet)
+        if payload is None:
+            self._backchannel_drop_count = getattr(self, "_backchannel_drop_count", 0) + 1
+            if self._backchannel_drop_count == 1 or self._backchannel_drop_count % 250 == 0:
+                self._diagnostic(
+                    "rtsp_backchannel_drop",
+                    reason=reason or "malformed",
+                    wrong_channel_count=getattr(self, "_backchannel_wrong_channel_count", 0),
+                    drop_count=self._backchannel_drop_count,
+                )
             return
+        self._backchannel_incoming_packets = getattr(self, "_backchannel_incoming_packets", 0) + 1
+        self._backchannel_incoming_bytes = getattr(self, "_backchannel_incoming_bytes", 0) + len(payload)
+        if self._backchannel_incoming_packets == 1 or self._backchannel_incoming_packets % 250 == 0:
+            self._diagnostic(
+                "rtsp_backchannel_input_progress",
+                packets=self._backchannel_incoming_packets,
+                bytes=self._backchannel_incoming_bytes,
+            )
+        converter = getattr(self, "_backchannel_converter", None)
+        if converter is None:
+            converter = _PCMA8To16()
+            self._backchannel_converter = converter
+        converted = converter.convert(payload)
+        self._backchannel_converted_packets = getattr(self, "_backchannel_converted_packets", 0) + 1
+        self._backchannel_converted_input_bytes = getattr(self, "_backchannel_converted_input_bytes", 0) + len(payload)
+        self._backchannel_converted_output_bytes = getattr(self, "_backchannel_converted_output_bytes", 0) + len(converted)
+        if self._backchannel_converted_packets == 1:
+            self._diagnostic(
+                "rtsp_backchannel_first_conversion",
+                input_bytes=len(payload),
+                output_bytes=len(converted),
+                input_clock_rate=BACKCHANNEL_AUDIO_CLOCK,
+                output_clock_rate=AUDIO_CLOCK,
+            )
+        elif self._backchannel_converted_packets % 250 == 0:
+            self._diagnostic(
+                "rtsp_backchannel_conversion_progress",
+                packets=self._backchannel_converted_packets,
+                input_bytes=self._backchannel_converted_input_bytes,
+                output_bytes=self._backchannel_converted_output_bytes,
+            )
         sender = getattr(getattr(self, "_bridge", None), "session", None)
         send = getattr(sender, "send_talkback", None)
         if callable(send):
-            payload = packet[header:]
-            if send(payload):
+            if send(converted):
                 self._backchannel_packets += 1
-                self._backchannel_bytes += len(payload)
+                self._backchannel_bytes += len(converted)
                 if self._backchannel_packets == 1:
-                    self._diagnostic("rtsp_backchannel_first_rtp", bytes=len(payload))
+                    self._diagnostic("rtsp_backchannel_first_rtp", bytes=len(converted))
                 elif self._backchannel_packets % 250 == 0:
                     self._diagnostic("rtsp_backchannel_progress", packets=self._backchannel_packets, bytes=self._backchannel_bytes)
 
