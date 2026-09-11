@@ -48,6 +48,33 @@ static void *talkback_client = NULL;
 static client_write_fn talkback_write = NULL;
 static pthread_t talkback_thread;
 static bool talkback_started = false;
+static const char *talkback_uid = NULL;
+static int talkback_connect_state = -1;
+static bool talkback_authenticated = false;
+
+typedef struct {
+    unsigned long long input_message_count;
+    unsigned long long input_message_bytes;
+    unsigned long long native_chunk_count;
+    unsigned long long native_chunk_bytes;
+    unsigned long long full_chunk_count;
+    unsigned long long discarded_residual_bytes_total;
+    unsigned long long write_attempt_count;
+    unsigned long long write_success_count;
+    unsigned long long write_failure_count;
+    unsigned long long short_header_read_count;
+    unsigned long long malformed_header_count;
+    unsigned long long incomplete_payload_count;
+    unsigned long long invalid_length_count;
+    unsigned long long write_elapsed_ms_total;
+    unsigned long long write_since_previous_ms_total;
+    long long previous_write_ms;
+    unsigned int first_write_timing_count;
+    bool first_success_reported;
+    bool first_failure_reported;
+} talkback_diagnostics_t;
+
+static talkback_diagnostics_t talkback_diagnostics;
 extern void __stack_chk_fail(void);
 
 static long long diagnostic_started_ms(void) {
@@ -353,27 +380,179 @@ static bool write_stdout(const unsigned char *payload, size_t size) {
     return true;
 }
 
+static void talkback_ipc_error(const char *kind, unsigned long long count, ssize_t bytes) {
+    if (count != 1 && count % 100 != 0) return;
+    char extra[160];
+    snprintf(extra, sizeof(extra), "kind=%s count=%llu bytes=%zd",
+             kind, count, bytes);
+    diagnostic_event("native_talkback_ipc_error", talkback_uid, extra);
+}
+
+static void talkback_write_progress(void) {
+    if (talkback_diagnostics.write_attempt_count == 0 ||
+        talkback_diagnostics.write_attempt_count % 250 != 0) return;
+    char extra[512];
+    long long now = diagnostic_started_ms();
+    long long elapsed = now > 0 ? now : 0;
+    double seconds = elapsed > 0 ? (double)elapsed / 1000.0 : 0.001;
+    snprintf(extra, sizeof(extra),
+             "channel=%d payload_size=640 timeout_ms=2000 write_result=aggregate "
+             "write_attempt_count=%llu write_success_count=%llu write_failure_count=%llu "
+             "input_message_count=%llu input_message_bytes=%llu native_chunk_count=%llu "
+             "native_chunk_bytes=%llu full_chunk_count=%llu discarded_residual_bytes_total=%llu "
+             "write_call_elapsed_ms_total=%llu write_since_previous_ms_total=%llu "
+             "write_call_elapsed_ms_average=%.3f writes_per_second=%.3f payload_bytes_per_second=%.3f "
+             "connected=%s authenticated=%s client_valid=%s connect_state=%d",
+             TALKBACK_CHANNEL,
+             talkback_diagnostics.write_attempt_count,
+             talkback_diagnostics.write_success_count,
+             talkback_diagnostics.write_failure_count,
+             talkback_diagnostics.input_message_count,
+             talkback_diagnostics.input_message_bytes,
+             talkback_diagnostics.native_chunk_count,
+             talkback_diagnostics.native_chunk_bytes,
+             talkback_diagnostics.full_chunk_count,
+             talkback_diagnostics.discarded_residual_bytes_total,
+             talkback_diagnostics.write_elapsed_ms_total,
+             talkback_diagnostics.write_since_previous_ms_total,
+             talkback_diagnostics.write_attempt_count > 0
+                 ? (double)talkback_diagnostics.write_elapsed_ms_total /
+                   (double)talkback_diagnostics.write_attempt_count : 0.0,
+             (double)talkback_diagnostics.write_attempt_count / seconds,
+             (double)talkback_diagnostics.native_chunk_bytes / seconds,
+             talkback_connect_state == CONNECT_STATE_ONLINE ? "true" : "false",
+             talkback_authenticated ? "true" : "false",
+             talkback_client != NULL ? "true" : "false",
+             talkback_connect_state);
+    diagnostic_event("native_talkback_write_progress", talkback_uid, extra);
+}
+
+static void talkback_write_one(const unsigned char *payload) {
+    long long started = diagnostic_started_ms();
+    long long since_previous = talkback_diagnostics.previous_write_ms > 0 && started > 0
+        ? started - talkback_diagnostics.previous_write_ms : -1;
+    bool write_result = talkback_write(talkback_client, TALKBACK_CHANNEL, payload, 640, 2000);
+    long long finished = diagnostic_started_ms();
+    long long call_elapsed = started > 0 && finished >= started ? finished - started : -1;
+    talkback_diagnostics.previous_write_ms = finished;
+    talkback_diagnostics.write_attempt_count++;
+    talkback_diagnostics.native_chunk_count++;
+    talkback_diagnostics.native_chunk_bytes += 640;
+    if (call_elapsed >= 0) talkback_diagnostics.write_elapsed_ms_total += (unsigned long long)call_elapsed;
+    if (since_previous >= 0) talkback_diagnostics.write_since_previous_ms_total += (unsigned long long)since_previous;
+    if (write_result) talkback_diagnostics.write_success_count++;
+    else talkback_diagnostics.write_failure_count++;
+    unsigned long long attempt = talkback_diagnostics.write_attempt_count;
+    if (attempt == 1 || (write_result && !talkback_diagnostics.first_success_reported) ||
+        (!write_result && !talkback_diagnostics.first_failure_reported)) {
+        char extra[512];
+        snprintf(extra, sizeof(extra),
+                 "channel=%d payload_size=640 timeout_ms=2000 write_result=%s "
+                 "write_attempt_count=%llu write_success_count=%llu write_failure_count=%llu "
+                 "input_message_count=%llu input_message_bytes=%llu native_chunk_count=%llu "
+                 "native_chunk_bytes=%llu full_chunk_count=%llu discarded_residual_bytes_total=%llu "
+                 "connected=%s authenticated=%s client_valid=%s connect_state=%d",
+                 TALKBACK_CHANNEL, write_result ? "true" : "false", attempt,
+                 talkback_diagnostics.write_success_count,
+                 talkback_diagnostics.write_failure_count,
+                 talkback_diagnostics.input_message_count,
+                 talkback_diagnostics.input_message_bytes,
+                 talkback_diagnostics.native_chunk_count,
+                 talkback_diagnostics.native_chunk_bytes,
+                 talkback_diagnostics.full_chunk_count,
+                 talkback_diagnostics.discarded_residual_bytes_total,
+                 talkback_connect_state == CONNECT_STATE_ONLINE ? "true" : "false",
+                 talkback_authenticated ? "true" : "false",
+                 talkback_client != NULL ? "true" : "false",
+                 talkback_connect_state);
+        if (attempt == 1)
+            diagnostic_event("native_talkback_write_first_attempt", talkback_uid, extra);
+        if (write_result && !talkback_diagnostics.first_success_reported) {
+            diagnostic_event("native_talkback_write_first_success", talkback_uid, extra);
+            talkback_diagnostics.first_success_reported = true;
+        }
+        if (!write_result && !talkback_diagnostics.first_failure_reported) {
+            diagnostic_event("native_talkback_write_first_failure", talkback_uid, extra);
+            talkback_diagnostics.first_failure_reported = true;
+        }
+    } else if (talkback_diagnostics.first_write_timing_count < 5) {
+        char extra[256];
+        snprintf(extra, sizeof(extra),
+                 "channel=%d payload_size=640 timeout_ms=2000 write_result=%s "
+                 "write_call_elapsed_ms=%lld since_previous_write_ms=%lld attempt=%llu",
+                 TALKBACK_CHANNEL, write_result ? "true" : "false", call_elapsed,
+                 since_previous, attempt);
+        diagnostic_event("native_talkback_write_timing", talkback_uid, extra);
+        talkback_diagnostics.first_write_timing_count++;
+    }
+    talkback_write_progress();
+}
+
 static void *forward_talkback(void *unused) {
     (void)unused;
     unsigned char header[8];
     while (stream_running && talkback_fd >= 0 && talkback_write != NULL) {
         ssize_t got = read(talkback_fd, header, sizeof(header));
         if (got <= 0) break;
-        if (got != (ssize_t)sizeof(header) || memcmp(header, "OKT1", 4) != 0) continue;
+        if (got != (ssize_t)sizeof(header)) {
+            talkback_diagnostics.short_header_read_count++;
+            talkback_ipc_error("short_header_read",
+                               talkback_diagnostics.short_header_read_count, got);
+            continue;
+        }
+        if (memcmp(header, "OKT1", 4) != 0) {
+            talkback_diagnostics.malformed_header_count++;
+            talkback_ipc_error("malformed_header",
+                               talkback_diagnostics.malformed_header_count, got);
+            continue;
+        }
         uint32_t length = ((uint32_t)header[4] << 24) | ((uint32_t)header[5] << 16) |
                           ((uint32_t)header[6] << 8) | header[7];
-        if (length == 0 || length > 4096) continue;
+        if (length == 0 || length > 4096) {
+            talkback_diagnostics.invalid_length_count++;
+            talkback_ipc_error("invalid_declared_length",
+                               talkback_diagnostics.invalid_length_count, (ssize_t)length);
+            continue;
+        }
         unsigned char *payload = malloc(length);
         if (payload == NULL) break;
         size_t offset = 0;
         while (offset < length) {
             ssize_t n = read(talkback_fd, payload + offset, length - offset);
-            if (n <= 0) { offset = 0; break; }
+            if (n <= 0) {
+                talkback_diagnostics.incomplete_payload_count++;
+                talkback_ipc_error("incomplete_payload",
+                                   talkback_diagnostics.incomplete_payload_count, n);
+                offset = 0;
+                break;
+            }
             offset += (size_t)n;
         }
         if (offset == length) {
+            talkback_diagnostics.input_message_count++;
+            talkback_diagnostics.input_message_bytes += length;
+            size_t full_chunks = length / 640;
+            size_t residual = length % 640;
+            talkback_diagnostics.full_chunk_count += full_chunks;
+            talkback_diagnostics.discarded_residual_bytes_total += residual;
+            if (talkback_diagnostics.input_message_count == 1) {
+                char extra[192];
+                snprintf(extra, sizeof(extra),
+                         "input_bytes=%u full_chunks=%zu chunk_bytes=640 residual_bytes=%zu",
+                         length, full_chunks, residual);
+                diagnostic_event("native_talkback_segmentation_first", talkback_uid, extra);
+            }
+            if (talkback_diagnostics.input_message_count % 250 == 0) {
+                char extra[256];
+                snprintf(extra, sizeof(extra),
+                         "messages=%llu full_chunks=%llu residual_bytes_discarded=%llu",
+                         talkback_diagnostics.input_message_count,
+                         talkback_diagnostics.full_chunk_count,
+                         talkback_diagnostics.discarded_residual_bytes_total);
+                diagnostic_event("native_talkback_segmentation_progress", talkback_uid, extra);
+            }
             for (size_t pos = 0; pos + 640 <= length; pos += 640)
-                (void)talkback_write(talkback_client, TALKBACK_CHANNEL, payload + pos, 640, 2000);
+                talkback_write_one(payload + pos);
         }
         memset(payload, 0, length);
         free(payload);
@@ -650,6 +829,10 @@ int main(int argc, char **argv) {
             talkback_fd = atoi(getenv("OKAM_TALKBACK_FD") != NULL ? getenv("OKAM_TALKBACK_FD") : "-1");
             talkback_client = client;
             talkback_write = client_write;
+            talkback_uid = uid;
+            talkback_connect_state = state;
+            talkback_authenticated = authenticated;
+            memset(&talkback_diagnostics, 0, sizeof(talkback_diagnostics));
             if (talkback_fd >= 0 && talkback_write != NULL)
                 talkback_started = pthread_create(&talkback_thread, NULL, forward_talkback, NULL) == 0;
             diagnostic_event("livestream_command_begin", uid, "streamid=10 substream=2");
