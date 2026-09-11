@@ -79,7 +79,7 @@ def test_addon_config_matches_supervisor_schema_expectations() -> None:
     assert isinstance(config["version"], str) and config["version"]
     assert re.fullmatch(r"[a-z0-9_]+", str(config["slug"]))
     assert isinstance(config["description"], str) and config["description"]
-    assert re.fullmatch(r"2\.0\.0(?:-rc[1-9](?:-talkdiag[12])?)?", str(config["version"]))
+    assert re.fullmatch(r"2\.0\.0(?:-rc[1-9](?:-(?:talkdiag[12]|talkpace1))?)?", str(config["version"]))
     assert config["arch"] == ["aarch64", "amd64"]
     assert config["webui"] == "http://[HOST]:[PORT:8099]"
     assert config["hassio_api"] is True

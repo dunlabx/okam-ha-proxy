@@ -23,6 +23,9 @@
 #define COMMAND_CHANNEL 0
 #define VIDEO_CHANNEL 1
 #define TALKBACK_CHANNEL 3
+#define TALKBACK_CHUNK_BYTES 640U
+#define TALKBACK_QUEUE_CAPACITY 16U
+#define TALKBACK_PACING_INTERVAL_MS 40LL
 #define LOGIN_RESPONSE 24577U
 #define READ_TIMEOUT_MS 500
 #define LOGIN_TIMEOUT_SECONDS 35
@@ -48,6 +51,8 @@ static void *talkback_client = NULL;
 static client_write_fn talkback_write = NULL;
 static pthread_t talkback_thread;
 static bool talkback_started = false;
+static pthread_t talkback_pacer_thread;
+static bool talkback_pacer_started = false;
 static const char *talkback_uid = NULL;
 static int talkback_connect_state = -1;
 static bool talkback_authenticated = false;
@@ -72,9 +77,27 @@ typedef struct {
     unsigned int first_write_timing_count;
     bool first_success_reported;
     bool first_failure_reported;
+    unsigned long long pacing_overflow_count;
+    unsigned int pacing_queue_depth_max;
 } talkback_diagnostics_t;
 
 static talkback_diagnostics_t talkback_diagnostics;
+typedef struct {
+    unsigned char payload[TALKBACK_CHUNK_BYTES];
+} talkback_chunk_t;
+
+static struct {
+    talkback_chunk_t chunks[TALKBACK_QUEUE_CAPACITY];
+    size_t head;
+    size_t tail;
+    size_t count;
+    bool stop;
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+} talkback_queue = {
+    .mutex = PTHREAD_MUTEX_INITIALIZER,
+    .condition = PTHREAD_COND_INITIALIZER,
+};
 extern void __stack_chk_fail(void);
 
 static long long diagnostic_started_ms(void) {
@@ -488,6 +511,144 @@ static void talkback_write_one(const unsigned char *payload) {
     talkback_write_progress();
 }
 
+static void talkback_queue_reset(void) {
+    pthread_mutex_lock(&talkback_queue.mutex);
+    talkback_queue.head = 0;
+    talkback_queue.tail = 0;
+    talkback_queue.count = 0;
+    talkback_queue.stop = false;
+    pthread_mutex_unlock(&talkback_queue.mutex);
+}
+
+static void talkback_queue_stop(void) {
+    pthread_mutex_lock(&talkback_queue.mutex);
+    talkback_queue.stop = true;
+    pthread_cond_broadcast(&talkback_queue.condition);
+    pthread_mutex_unlock(&talkback_queue.mutex);
+}
+
+static size_t talkback_queue_depth(void) {
+    size_t depth;
+    pthread_mutex_lock(&talkback_queue.mutex);
+    depth = talkback_queue.count;
+    pthread_mutex_unlock(&talkback_queue.mutex);
+    return depth;
+}
+
+static bool talkback_queue_push(const unsigned char *payload) {
+    unsigned long long overflow_count = 0;
+    pthread_mutex_lock(&talkback_queue.mutex);
+    if (talkback_queue.stop || talkback_queue.count >= TALKBACK_QUEUE_CAPACITY) {
+        overflow_count = ++talkback_diagnostics.pacing_overflow_count;
+        pthread_mutex_unlock(&talkback_queue.mutex);
+        if (overflow_count == 1 || overflow_count % 100 == 0) {
+            char extra[160];
+            snprintf(extra, sizeof(extra),
+                     "queue_depth=%zu queue_capacity=%u overflow_count=%llu",
+                     talkback_queue_depth(), TALKBACK_QUEUE_CAPACITY, overflow_count);
+            diagnostic_event("native_talkback_pacing_overflow", talkback_uid, extra);
+        }
+        return false;
+    }
+    memcpy(talkback_queue.chunks[talkback_queue.tail].payload,
+           payload, TALKBACK_CHUNK_BYTES);
+    talkback_queue.tail = (talkback_queue.tail + 1) % TALKBACK_QUEUE_CAPACITY;
+    talkback_queue.count++;
+    if (talkback_queue.count > talkback_diagnostics.pacing_queue_depth_max)
+        talkback_diagnostics.pacing_queue_depth_max = (unsigned int)talkback_queue.count;
+    pthread_cond_signal(&talkback_queue.condition);
+    pthread_mutex_unlock(&talkback_queue.mutex);
+    return true;
+}
+
+static bool talkback_queue_pop(unsigned char *payload) {
+    pthread_mutex_lock(&talkback_queue.mutex);
+    while (talkback_queue.count == 0 && !talkback_queue.stop && stream_running)
+        pthread_cond_wait(&talkback_queue.condition, &talkback_queue.mutex);
+    if (talkback_queue.count == 0 || talkback_queue.stop || !stream_running) {
+        pthread_mutex_unlock(&talkback_queue.mutex);
+        return false;
+    }
+    memcpy(payload, talkback_queue.chunks[talkback_queue.head].payload,
+           TALKBACK_CHUNK_BYTES);
+    memset(talkback_queue.chunks[talkback_queue.head].payload, 0,
+           TALKBACK_CHUNK_BYTES);
+    talkback_queue.head = (talkback_queue.head + 1) % TALKBACK_QUEUE_CAPACITY;
+    talkback_queue.count--;
+    pthread_mutex_unlock(&talkback_queue.mutex);
+    return true;
+}
+
+static void talkback_sleep_until(long long deadline_ms) {
+    while (stream_running) {
+        long long now = diagnostic_started_ms();
+        if (now <= 0 || now >= deadline_ms) return;
+        struct timespec remaining;
+        remaining.tv_sec = (time_t)((deadline_ms - now) / 1000LL);
+        remaining.tv_nsec = (long)(((deadline_ms - now) % 1000LL) * 1000000L);
+        if (nanosleep(&remaining, NULL) != 0 && errno != EINTR) return;
+    }
+}
+
+static void *talkback_pacer(void *unused) {
+    (void)unused;
+    unsigned char payload[TALKBACK_CHUNK_BYTES];
+    unsigned long long paced_write_count = 0;
+    unsigned long long interval_total = 0;
+    unsigned long long interval_min = 0;
+    unsigned long long interval_max = 0;
+    unsigned long long late_write_count = 0;
+    bool first = true;
+    long long next_deadline = 0;
+    diagnostic_event("native_talkback_pacer_started", talkback_uid,
+                     "target_interval_ms=40 queue_capacity=16 chunk_bytes=640");
+    while (talkback_queue_pop(payload)) {
+        long long now = diagnostic_started_ms();
+        if (first) {
+            next_deadline = now > 0 ? now : 0;
+            first = false;
+            diagnostic_event("native_talkback_pacing_first", talkback_uid,
+                             "target_interval_ms=40 queue_depth=0");
+        }
+        long long previous_write = talkback_diagnostics.previous_write_ms;
+        talkback_sleep_until(next_deadline);
+        long long before = diagnostic_started_ms();
+        if (before > 0 && next_deadline > 0 && before > next_deadline)
+            late_write_count++;
+        talkback_write_one(payload);
+        long long after = diagnostic_started_ms();
+        if (talkback_diagnostics.write_attempt_count > 1 &&
+            previous_write > 0 && before > 0) {
+            long long interval = before - previous_write;
+            if (interval >= 0) {
+                interval_total += (unsigned long long)interval;
+                if (interval_min == 0 || (unsigned long long)interval < interval_min)
+                    interval_min = (unsigned long long)interval;
+                if ((unsigned long long)interval > interval_max)
+                    interval_max = (unsigned long long)interval;
+            }
+        }
+        paced_write_count++;
+        next_deadline += TALKBACK_PACING_INTERVAL_MS;
+        if (after > 0 && next_deadline < after) next_deadline = after;
+        if (paced_write_count % 250 == 0) {
+            char extra[320];
+            size_t depth = talkback_queue_depth();
+            snprintf(extra, sizeof(extra),
+                     "paced_write_count=%llu queue_depth=%zu queue_depth_max=%u "
+                     "average_interval_ms=%.3f min_interval_ms=%llu max_interval_ms=%llu "
+                     "late_write_count=%llu",
+                     paced_write_count, depth, talkback_diagnostics.pacing_queue_depth_max,
+                     interval_total > 0 && paced_write_count > 1
+                         ? (double)interval_total / (double)(paced_write_count - 1) : 0.0,
+                     interval_min, interval_max, late_write_count);
+            diagnostic_event("native_talkback_pacing_progress", talkback_uid, extra);
+        }
+        memset(payload, 0, sizeof(payload));
+    }
+    return NULL;
+}
+
 static void *forward_talkback(void *unused) {
     (void)unused;
     unsigned char header[8];
@@ -551,8 +712,8 @@ static void *forward_talkback(void *unused) {
                          talkback_diagnostics.discarded_residual_bytes_total);
                 diagnostic_event("native_talkback_segmentation_progress", talkback_uid, extra);
             }
-            for (size_t pos = 0; pos + 640 <= length; pos += 640)
-                talkback_write_one(payload + pos);
+            for (size_t pos = 0; pos + TALKBACK_CHUNK_BYTES <= length; pos += TALKBACK_CHUNK_BYTES)
+                (void)talkback_queue_push(payload + pos);
         }
         memset(payload, 0, length);
         free(payload);
@@ -833,23 +994,33 @@ int main(int argc, char **argv) {
             talkback_connect_state = state;
             talkback_authenticated = authenticated;
             memset(&talkback_diagnostics, 0, sizeof(talkback_diagnostics));
+            talkback_started = false;
+            talkback_pacer_started = false;
+            talkback_queue_reset();
             {
                 bool talkback_fd_valid = talkback_fd >= 0;
                 bool client_write_resolved = talkback_write != NULL;
                 int thread_result = -1;
+                int pacer_thread_result = -1;
                 if (talkback_fd_valid && client_write_resolved) {
-                    thread_result = pthread_create(&talkback_thread, NULL, forward_talkback, NULL);
-                    talkback_started = thread_result == 0;
+                    pacer_thread_result = pthread_create(&talkback_pacer_thread, NULL, talkback_pacer, NULL);
+                    talkback_pacer_started = pacer_thread_result == 0;
+                    if (talkback_pacer_started) {
+                        thread_result = pthread_create(&talkback_thread, NULL, forward_talkback, NULL);
+                        talkback_started = thread_result == 0;
+                    }
                 }
                 {
-                    char extra[256];
+                    char extra[320];
                     snprintf(extra, sizeof(extra),
                              "talkback_fd=%d talkback_fd_valid=%s client_write_resolved=%s "
-                             "connected=%s authenticated=%s live_mode=true pthread_result=%d",
+                             "connected=%s authenticated=%s live_mode=true pthread_result=%d "
+                             "pacer_pthread_result=%d",
                              talkback_fd, talkback_fd_valid ? "true" : "false",
                              client_write_resolved ? "true" : "false",
                              connected ? "true" : "false",
-                             authenticated ? "true" : "false", thread_result);
+                             authenticated ? "true" : "false", thread_result,
+                             pacer_thread_result);
                     diagnostic_event(
                         talkback_started ? "native_talkback_thread_started"
                                          : "native_talkback_thread_start_failure",
@@ -892,10 +1063,14 @@ int main(int argc, char **argv) {
         }
         if (connected) disconnected = client_disconnect(client);
         stream_running = 0;
+        talkback_queue_stop();
         if (talkback_fd >= 0) close(talkback_fd);
         if (talkback_started) {
             (void)pthread_cancel(talkback_thread);
             (void)pthread_join(talkback_thread, NULL);
+        }
+        if (talkback_pacer_started) {
+            (void)pthread_join(talkback_pacer_thread, NULL);
         }
         client_destroy(client);
     }
