@@ -10,7 +10,7 @@ HELPER = ROOT / "native" / "hybris_connect" / "hybris_connect.c"
 
 def test_diagnostic_candidate_version_and_native_helper_scope():
     config = yaml.safe_load((ROOT / "okam_native_app" / "config.yaml").read_text())
-    assert config["version"] == "2.0.0-rc8-talkframe1"
+    assert config["version"] == "2.0.0-rc8-talkframe2"
 
     source = HELPER.read_text()
     assert "typedef bool (*client_write_fn)(void *, int, const void *, int, int);" in source
@@ -52,8 +52,8 @@ def test_native_talk_frame_has_exact_official_header_and_audio_payload_contract(
     assert match is not None
     actual = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", match.group(1)))
     expected = bytes.fromhex(
-        "55aa15a80801000000000000800200000000000007000000"
-        "0000000000000000"
+        "55aa15a8080100000000000000000000"
+        "80020000000000000000070000000000"
     )
     assert actual == expected
     audio = bytes(range(256)) * 2 + bytes(range(128))
@@ -62,6 +62,9 @@ def test_native_talk_frame_has_exact_official_header_and_audio_payload_contract(
     assert len(frame) == 672
     assert frame[:32] == expected
     assert frame[4] == 0x08
+    assert frame[12:16] == b"\x00" * 4
+    assert frame[16:20] == bytes.fromhex("80020000")
+    assert frame[24:28] == bytes.fromhex("00000700")
     assert frame[32:] == audio
 
     write_section = source[source.index("static void talkback_write_one") : source.index("static void talkback_queue_reset")]

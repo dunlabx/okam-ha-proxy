@@ -88,10 +88,10 @@ static const unsigned char talkback_native_header[TALKBACK_NATIVE_HEADER_BYTES] 
     0x55, 0xaa, 0x15, 0xa8,
     0x08, 0x01, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
     0x80, 0x02, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00,
-    0x07, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x07, 0x00,
     0x00, 0x00, 0x00, 0x00,
 };
 typedef struct {
@@ -472,7 +472,7 @@ static void talkback_write_one(const unsigned char *payload) {
     if (talkback_diagnostics.native_chunk_count == 0) {
         diagnostic_event("native_talkback_native_frame_first", talkback_uid,
                          "channel=3 native_header_bytes=32 audio_payload_bytes=640 "
-                         "client_write_bytes=672 native_type=8");
+                         "client_write_bytes=672 native_type=8 native_length_offset=16");
     }
     bool write_result = talkback_write(
         talkback_client, TALKBACK_CHANNEL, native_frame, TALKBACK_NATIVE_FRAME_BYTES, 2000);
