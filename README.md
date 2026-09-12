@@ -34,6 +34,23 @@ The project contains both required parts:
 - No transcoding during live view
 - No vendor identifiers, account tokens, or passwords exposed by the unauthenticated readiness API
 
+### Two-way audio / Talkback compatibility
+
+Two-way audio has been physically verified with the currently tested O-KAM
+camera. The working Talkback path uses the camera's native CS2 channel 3
+framing:
+
+- native media type: `0x08`
+- 32-byte native audio header
+- audio payload: 640 bytes PCMA / 16 kHz mono
+- payload length (`640`, `0x00000280`) stored at native header offset 16
+
+This framing was derived from official O-KAM Intercom traffic and verified
+against a real camera. Other O-KAM or VStarcam models and firmware versions
+have not yet been physically tested. Their Talkback framing or audio
+requirements may differ, so two-way audio compatibility should currently be
+considered model/firmware dependent.
+
 ## Requirements
 
 - A Home Assistant system reporting the `aarch64` or `amd64` architecture
