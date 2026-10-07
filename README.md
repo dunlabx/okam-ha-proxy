@@ -306,3 +306,10 @@ identifiers.
 
 The bridge source is MIT licensed. Vendor components remain subject to their
 own terms and are not stored in this repository.
+
+
+## ❤️ Support the Project
+
+If Auto Retry is useful to you, consider supporting its development.
+
+[![Support the Developer](https://img.shields.io/badge/❤️_Support_the_Developer-Donate-blue?style=for-the-badge)](https://dunlabx.github.io)
