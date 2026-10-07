@@ -308,8 +308,8 @@ The bridge source is MIT licensed. Vendor components remain subject to their
 own terms and are not stored in this repository.
 
 
-## ❤️ Support the Project
+## ❤️ Support
 
-If Auto Retry is useful to you, consider supporting its development.
+If you find this project useful and would like to support its continued development:
 
-[![Support the Developer](https://img.shields.io/badge/❤️_Support_the_Developer-Donate-blue?style=for-the-badge)](https://dunlabx.github.io)
+[![Support the Developer](https://img.shields.io/badge/❤️_Support_the_Developer-→-blue?style=for-the-badge)](https://dunlabx.github.io)
